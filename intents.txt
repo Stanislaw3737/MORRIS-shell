@@ -1,0 +1,456 @@
+# Morris Intents Reference
+
+Morris is a reactive intent-driven programming language that combines variable management, file operations, and a book metaphor for filesystem navigation with advanced transaction-based change management.
+
+## Core Concepts
+
+### Intents
+Morris operates on "intents" - natural language-like commands that express what you want to accomplish rather than how to do it.
+
+### Reactive Variables
+Variables automatically update when their dependencies change, creating a dynamic computational environment.
+
+### Transactions (Blacksmithing Metaphor)
+All changes are crafted in transactions, allowing you to preview, test, and commit changes safely.
+
+## Core Commands
+
+### Variable Management
+
+#### `set` - Create or update variables
+```
+set x = 42
+set name = "Alice"
+set enabled = true
+set price = 19.99 as float
+set items = [1, 2, 3]
+set config = {"debug": true, "port": 8080}
+```
+
+#### `ensure` - Guarantee conditions
+```
+ensure x = 100
+ensure file "config.txt" exists
+```
+
+#### `derive` - Convert variable types
+```
+set value = "42"
+derive value  # Converts string "42" to integer 42
+```
+
+#### `analyze` - Examine variables
+```
+analyze x  # Shows dependencies, value, type info
+```
+
+#### `find` - Search for variables
+```
+find user  # Finds variables containing "user"
+```
+
+#### `freeze` - Make variables immutable
+```
+freeze config  # Prevents further changes to config
+```
+
+### File Operations
+
+#### `write` - Write content to files
+```
+write "message.txt" "Hello World"
+write "data.json" variable content
+```
+
+#### `read` - Read files into variables
+```
+read "config.json" into settings
+```
+
+#### `append` - Add content to existing files
+```
+append "log.txt" "New log entry"
+```
+
+#### `mkdir` - Create directories
+```
+mkdir "new_project/src"
+```
+
+#### `list` - List directory contents
+```
+list "/home/user/documents"
+```
+
+#### `info` - Get file information
+```
+info "important.doc"
+```
+
+#### `exists` - Check if files exist
+```
+exists "config.ini"
+```
+
+#### `save/load` - Persist environment
+```
+save "my_session.menv"
+load "previous_session.menv"
+```
+
+### Output and Display
+
+#### `writeout` - Display output
+```
+writeout("Current temperature: " + temp + "°C")
+```
+
+#### `env` - Show environment variables
+```
+env
+```
+
+#### `history` - Show command history
+```
+history
+```
+
+## Book Navigation Metaphor
+
+Navigate your filesystem like turning pages in a book.
+
+#### `page` - Show current location
+```
+page
+```
+
+#### `turn` - Change directory
+```
+turn "projects/rust"
+turn ..              # Go up one level
+turn -1              # Go back one page
+turn "/home/user"    # Absolute path
+```
+
+#### `chapter` - Alias for turn
+```
+chapter "documentation"
+```
+
+#### `bookmark` - Create bookmarks
+```
+bookmark add "work" "/home/user/work"
+bookmark remove "work"
+bookmarks            # List all bookmarks
+```
+
+#### `volume` - Define volumes
+```
+volume add "projects" "/home/user/projects" "My coding projects"
+volumes              # List all volumes
+```
+
+#### `shelve/unshelve` - Save/restore positions
+```
+shelve               # Save current position
+unshelve             # Return to saved position
+```
+
+#### `back` - Navigate backward
+```
+back                 # Go back one page
+back 3               # Go back 3 pages
+```
+
+#### `index` - List directory contents
+```
+index
+```
+
+#### `annotate` - Add notes
+```
+annotate "README.md" "Important project documentation"
+read_annotation "README.md"
+```
+
+#### `skim` - Quick file preview
+```
+skim "large_file.txt"
+```
+
+#### `library` - Show library overview
+```
+library
+```
+
+## Advanced Navigation
+
+#### `jump/peek/goto` - Enhanced navigation
+```
+jump "projects"
+peek -2              # See where you'd go back 2 pages
+goto "bookmark_name"
+```
+
+#### `return` - Return to previous locations
+```
+return               # Go back one page
+return 3             # Go back 3 pages
+```
+
+#### `mark` - Create temporary marks
+```
+mark "important_spot" "Checkpoint for debugging"
+```
+
+## Transaction System (Blacksmithing Metaphor)
+
+Manage changes safely with crafting sessions.
+
+#### `craft` - Begin crafting changes
+```
+craft "update_config"
+craft                # Anonymous crafting session
+```
+
+#### `forge` - Commit changes permanently
+```
+forge                # Apply all crafted changes
+```
+
+#### `smelt` - Discard crafted changes
+```
+smelt                # Melt down and discard changes
+```
+
+#### `temper` - Test changes without applying
+```
+temper               # Dry-run to see impact
+```
+
+#### `inspect` - View current changes
+```
+inspect              # Show what's been crafted
+```
+
+#### `anneal` - Apply changes gradually
+```
+anneal               # Apply one change
+anneal 3             # Apply 3 changes
+```
+
+#### `quench` - Apply changes immediately
+```
+quench               # Fast-commit all changes
+```
+
+#### `polish` - Optimize changes *(Coming Soon)*
+```
+polish               # Optimize crafted changes
+```
+
+#### `alloy` - Merge crafting sessions *(Coming Soon)*
+```
+alloy session1 session2
+```
+
+#### `engrave` - Add metadata *(Coming Soon)*
+```
+engrave "priority" "high"
+```
+
+#### `gild` - Mark as important *(Coming Soon)*
+```
+gild config settings
+```
+
+#### `patina` - Show change history *(Coming Soon)*
+```
+patina config
+```
+
+#### `transaction` - Show transaction status
+```
+transaction          # Show current transaction info
+```
+
+## Expression Language
+
+### Mathematical Operations
+```
+set result = (x + y) * z / 2
+set power = base ** exponent  # Future feature
+```
+
+### Conditional Expressions
+```
+set grade = "A" when score >= 90 | "B" when score >= 80 | "C"
+set status = "online" when is_connected | "offline"
+```
+
+### String Interpolation
+```
+set message = "Hello {name}, you have {count} messages"
+```
+
+### Built-in Functions
+```
+set length = len("hello")           # 5
+set upper = upper("hello")          # "HELLO"
+set lower = lower("HELLO")          # "hello"
+set trimmed = trim("  hello  ")     # "hello"
+set occurrences = count(text, "pattern")
+set timestamp = now()               # "20231201_143022"
+```
+
+### Comparison and Logic
+```
+set is_valid = age >= 18 and active == true
+set is_ready = not processing and (queue_size < 100)
+```
+
+## Examples
+
+### Example 1: Configuration Management
+```
+# Create configuration
+set server_port = 8080
+set debug_mode = false
+set database_url = "postgresql://localhost/myapp"
+
+# Save configuration
+write "config.json" "{server_port: " + server_port + ", debug: " + debug_mode + "}"
+
+# Load and use configuration
+read "config.json" into config_settings
+```
+
+### Example 2: Project Setup Workflow
+```
+# Navigate to projects directory
+turn "projects"
+
+# Create new project structure
+mkdir "new_project/src"
+mkdir "new_project/tests"
+
+# Bookmark the project
+bookmark add "new_project" "new_project"
+
+# Create initial files
+write "new_project/README.md" "# New Project"
+write "new_project/src/main.rs" "fn main() { println!(\"Hello\"); }"
+
+# Save environment
+save "project_setup.menv"
+```
+
+### Example 3: Data Processing with Transactions
+```
+# Start crafting session
+craft "data_processing"
+
+# Load and process data
+read "raw_data.csv" into raw_content
+set processed_lines = len(raw_content.split("\n")) - 1
+
+# Create summary
+set summary = "Processed " + processed_lines + " lines"
+
+# Preview changes
+temper
+
+# Commit changes
+forge
+```
+
+### Example 4: Conditional Configuration
+```
+# Set environment
+set environment = "production"
+
+# Conditional configuration
+set log_level = "ERROR" when environment == "production" | "DEBUG"
+set cache_size = 1000 when environment == "production" | 100
+
+# Database settings with conditions
+set db_pool = 20 when environment == "production" | 5
+```
+
+## System Commands
+
+#### `help` - Show all commands
+```
+help
+```
+
+#### `clear` - Clear screen
+```
+clear
+```
+
+#### `exit/quit` - Exit Morris
+```
+exit
+quit
+```
+
+## Engine Management
+
+#### `engine` - Manage propagation engine
+```
+engine on            # Enable new engine
+engine off           # Use legacy engine
+engine migrate       # Migrate to new engine
+engine visualize     # Show dependency graph
+engine history       # Show propagation history
+engine status        # Show engine status
+```
+
+## History Management
+
+#### `history` - Manage command history
+```
+history              # Show recent commands
+history search "set" # Search history
+history replay <id>  # Replay command
+history save         # Save history
+```
+
+## What-If Analysis
+
+#### `what-if` - Predict change impacts
+```
+what-if x=100, y=200 check "x + y < 500"
+what-if config.debug=true check safety
+```
+
+## Template Features
+
+Morris supports advanced templating with both `${variable}` and `$variable` syntax:
+
+```
+set name = "Alice"
+set greeting = "Hello ${name}!"  # "Hello Alice!"
+set message = "Welcome $name"    # "Welcome Alice"
+```
+
+## Error Handling
+
+Morris provides descriptive error messages:
+- Variable not found
+- Type mismatches
+- File operation errors
+- Syntax errors with line numbers
+- Transaction conflicts
+
+## Best Practices
+
+1. **Use transactions** for significant changes
+2. **Freeze important configs** to prevent accidental changes
+3. **Bookmark frequently used locations**
+4. **Save environments** for later restoration
+5. **Use `temper`** before `forge` to preview changes
+6. **Organize with volumes** for large projects
+7. **Add annotations** for important files
+8. **Use conditional expressions** for flexible logic
