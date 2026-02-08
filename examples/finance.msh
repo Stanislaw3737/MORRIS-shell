@@ -1,0 +1,53 @@
+# Financial Modeling with Morris
+# Demonstrates complex dependencies
+
+# Revenue streams
+set product_sales = 50000
+set service_revenue = 30000
+set subscription = 20000
+
+# Expenses
+set salaries = 40000
+set marketing = 15000
+set infrastructure = 8000
+set miscellaneous = 5000
+
+# Calculations
+set total_revenue = product_sales + service_revenue + subscription
+set total_expenses = salaries + marketing + infrastructure + miscellaneous
+set gross_profit = total_revenue - total_expenses
+set profit_margin = gross_profit / total_revenue
+
+# Derived metrics
+# Assuming 10 employees
+set revenue_per_employee = total_revenue / 10
+set expense_ratio = total_expenses / total_revenue
+
+# Output report
+writeout(=== Financial Report ===)
+writeout(Revenue: ${total_revenue})
+writeout(  • Product Sales: ${product_sales})
+writeout(  • Service Revenue: ${service_revenue})
+writeout(  • Subscription: ${subscription})
+writeout(\nExpenses: ${total_expenses})
+writeout(  • Salaries: ${salaries})
+writeout(  • Marketing: ${marketing})
+writeout(  • Infrastructure: ${infrastructure})
+writeout(  • Miscellaneous: ${miscellaneous})
+writeout(\nGross Profit: ${gross_profit})
+writeout(Profit Margin: {profit_margin * 100}%)
+writeout(Revenue per Employee: ${revenue_per_employee})
+writeout(Expense Ratio: {expense_ratio * 100}%)
+
+# What-if scenario
+writeout(\n=== What-if: Increase marketing by 20% ===)
+set new_marketing = marketing * 1.2
+ensure marketing = new_marketing
+
+writeout(Updated Marketing: ${marketing})
+writeout(Updated Gross Profit: ${gross_profit})
+writeout(Updated Profit Margin: {profit_margin * 100}%)
+
+# Analysis
+writeout(\n=== Dependency Analysis ===)
+analyze gross_profit

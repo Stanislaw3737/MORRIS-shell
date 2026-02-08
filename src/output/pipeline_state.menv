@@ -1,0 +1,64 @@
+{
+  "version": "1.0",
+  "morris_version": "0.4.0",
+  "created": 1765899810,
+  "variables": {
+    "processed": {
+      "value": {
+        "Str": "Processed data:\\n{header}\\n{row1}\\n{row2}\\n{row3}"
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "header": {
+      "value": {
+        "Str": "Name,Age,Score"
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "line_count": {
+      "value": {
+        "Str": "count(csv_data, \"\\n\") + 1"
+      },
+      "is_constant": false,
+      "source": "Direct"
+    },
+    "csv_data": {
+      "value": {
+        "Str": "{header}\\n{row1}\\n{row2}\\n{row3}"
+      },
+      "is_constant": false,
+      "source": "Direct"
+    },
+    "row1": {
+      "value": {
+        "Str": "Alice,25,95.5"
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "row3": {
+      "value": {
+        "Str": "Charlie,28,91.5"
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "row2": {
+      "value": {
+        "Str": "Bob,30,88.0"
+      },
+      "is_constant": false,
+      "source": "Computed"
+    }
+  },
+  "expressions": {
+    "row1": "\"Alice,25,95.5\"",
+    "row3": "\"Charlie,28,91.5\"",
+    "row2": "\"Bob,30,88.0\"",
+    "header": "\"Name,Age,Score\"",
+    "processed": "(\"Processed data:\\n\" + csv_data)"
+  },
+  "dependencies": {}
+}

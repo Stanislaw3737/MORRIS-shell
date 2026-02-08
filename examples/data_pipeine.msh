@@ -1,0 +1,23 @@
+# Debug test for specific issues
+set a = 10
+set b = 20
+
+# Test 1: not operator
+set test1 = true when not (a < 0) | false
+writeout("Test 1 (not): test1={test1}")
+
+# Test 2: false literal  
+set test2 = false
+writeout("Test 2 (false): test2={test2}")
+
+# Test 3: negative number
+set test3 = -5
+writeout("Test 3 (negative): test3={test3}")
+
+# Test 4: Simple conditional with not
+set test4 = "yes" when a > 5 and not (b < 10) | "no"
+writeout("Test 4 (and not): test4={test4}")
+
+# Test 5: String literal at end
+set test5 = "first" when a > 100 | "second"
+writeout("Test 5 (string end): test5={test5}")

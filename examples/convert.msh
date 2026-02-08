@@ -1,0 +1,38 @@
+# Unit Conversion System
+# Shows propagation in action
+
+# Base unit
+set meters = 1000
+
+# Metric conversions
+set kilometers = meters / 1000
+set centimeters = meters * 100
+set millimeters = meters * 1000
+
+# Imperial conversions
+set feet = meters * 3.28084
+set inches = feet * 12
+set yards = feet / 3
+set miles = kilometers * 0.621371
+
+# Output
+writeout(=== Unit Conversions ===)
+writeout(Base: {meters} meters)
+writeout(\nMetric:)
+writeout(  {kilometers} kilometers)
+writeout(  {centimeters} centimeters)
+writeout(  {millimeters} millimeters)
+writeout(\nImperial:)
+writeout(  {feet} feet)
+writeout(  {inches} inches)
+writeout(  {yards} yards)
+writeout(  {miles} miles)
+
+# Change base and watch everything update
+writeout(\n=== Changing base to 500 meters ===)
+ensure meters = 500
+
+writeout(\nUpdated Conversions:)
+writeout({meters} meters = {kilometers} kilometers)
+writeout({meters} meters = {feet} feet)
+writeout({meters} meters = {miles} miles)
