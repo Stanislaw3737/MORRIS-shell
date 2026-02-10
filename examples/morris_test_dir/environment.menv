@@ -1,0 +1,269 @@
+{
+  "version": "1.0",
+  "morris_version": "0.5.0",
+  "created": 1766264035,
+  "variables": {
+    "derived": {
+      "value": {
+        "Int": 200
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "left": {
+      "value": {
+        "Int": 40
+      },
+      "is_constant": false,
+      "source": "Propagated"
+    },
+    "greeting": {
+      "value": {
+        "Str": "Hello + \" \" + World"
+      },
+      "is_constant": false,
+      "source": "Direct"
+    },
+    "a": {
+      "value": {
+        "Int": 10
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "mutable": {
+      "value": {
+        "Int": 200
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "c": {
+      "value": {
+        "Int": 30
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "chain1": {
+      "value": {
+        "Int": 20
+      },
+      "is_constant": false,
+      "source": "Propagated"
+    },
+    "truth": {
+      "value": {
+        "Bool": true
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "zero": {
+      "value": {
+        "Int": 0
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "foundation": {
+      "value": {
+        "Int": 100
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "silicon_execution": {
+      "value": {
+        "Str": "autonomy"
+      },
+      "is_constant": false,
+      "source": "Direct"
+    },
+    "right": {
+      "value": {
+        "Int": 25
+      },
+      "is_constant": false,
+      "source": "Propagated"
+    },
+    "str2": {
+      "value": {
+        "Str": "World"
+      },
+      "is_constant": false,
+      "source": "Direct"
+    },
+    "carbon_will": {
+      "value": {
+        "Str": "intent"
+      },
+      "is_constant": false,
+      "source": "Direct"
+    },
+    "sum": {
+      "value": {
+        "Int": 65
+      },
+      "is_constant": false,
+      "source": "Propagated"
+    },
+    "relationship": {
+      "value": {
+        "Str": "Carbon speaks to Silicon"
+      },
+      "is_constant": false,
+      "source": "Direct"
+    },
+    "str1": {
+      "value": {
+        "Str": "Hello"
+      },
+      "is_constant": false,
+      "source": "Direct"
+    },
+    "chain2": {
+      "value": {
+        "Int": 200
+      },
+      "is_constant": false,
+      "source": "Propagated"
+    },
+    "base": {
+      "value": {
+        "Int": 20
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "morris_principle": {
+      "value": {
+        "Str": "\"The  + carbon_will +  of Carbon guides the  + silicon_execution +  of Silicon\""
+      },
+      "is_constant": false,
+      "source": "Direct"
+    },
+    "substrate": {
+      "value": {
+        "Str": "Silicon"
+      },
+      "is_constant": false,
+      "source": "Direct"
+    },
+    "observation": {
+      "value": {
+        "Str": "Morris observes"
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "count": {
+      "value": {
+        "Int": 42
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "balance": {
+      "value": {
+        "Str": "\"Morris observes, then Morris acts. Never Morris acts without Morris observes.\""
+      },
+      "is_constant": false,
+      "source": "Direct"
+    },
+    "b": {
+      "value": {
+        "Int": 20
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "action": {
+      "value": {
+        "Str": "Morris acts"
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "computed": {
+      "value": {
+        "Int": 100
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "message": {
+      "value": {
+        "Str": "The answer"
+      },
+      "is_constant": false,
+      "source": "Direct"
+    },
+    "nested": {
+      "value": {
+        "Str": "(((a + b) * 2) - (c / 3)) * 4"
+      },
+      "is_constant": false,
+      "source": "Direct"
+    },
+    "complex": {
+      "value": {
+        "Str": "(a + b) * (c - a) / 2"
+      },
+      "is_constant": false,
+      "source": "Direct"
+    },
+    "chain3": {
+      "value": {
+        "Int": 2000
+      },
+      "is_constant": false,
+      "source": "Propagated"
+    },
+    "source": {
+      "value": {
+        "Int": 2
+      },
+      "is_constant": false,
+      "source": "Computed"
+    },
+    "philosopher": {
+      "value": {
+        "Str": "Carbon"
+      },
+      "is_constant": false,
+      "source": "Direct"
+    },
+    "frozen_ref": {
+      "value": {
+        "Int": 200
+      },
+      "is_constant": true,
+      "source": "Computed"
+    }
+  },
+  "expressions": {
+    "count": "42",
+    "truth": "true",
+    "right": "(base + 5)",
+    "action": "\"Morris acts\"",
+    "derived": "(foundation * 2)",
+    "zero": "0",
+    "a": "10",
+    "chain3": "(chain2 * 10)",
+    "frozen_ref": "(mutable * 2)",
+    "left": "(base * 2)",
+    "c": "30",
+    "mutable": "200",
+    "base": "20",
+    "foundation": "100",
+    "sum": "(left + right)",
+    "b": "20",
+    "observation": "\"Morris observes\"",
+    "source": "2",
+    "chain1": "(source * 10)",
+    "chain2": "(chain1 * 10)",
+    "computed": "((derived + foundation) / 3)"
+  },
+  "dependencies": {}
+}

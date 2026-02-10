@@ -1,0 +1,29 @@
+# Configuration Management Example
+
+# Read existing config if it exists
+exists "./config.json"
+
+# Create configuration as a string (since Morris doesn't have JSON literals yet)
+set config_line1 = "{"
+set config_line2 = '  "app_name": "Morris",'
+set config_line3 = '  "version": "0.5.0",'
+set config_line4 = '  "debug": true,'
+set config_line5 = '  "max_connections": 100'
+set config_line6 = "}"
+
+# Combine lines
+set config = "{config_line1}\n{config_line2}\n{config_line3}\n{config_line4}\n{config_line5}\n{config_line6}"
+
+# Write config to file
+write "./config.json" config
+writeout(Configuration written to config.json)
+
+# Create backup with timestamp
+set timestamp = now()
+set backup_path = "./backups/config_backup_" + timestamp + ".json"
+mkdir "./backups"
+write backup_path config
+writeout(Backup created: {backup_path})
+
+# List all backups
+list "./backups"

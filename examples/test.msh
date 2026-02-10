@@ -1,0 +1,97 @@
+# Comprehensive Conditional Test (Single Line Version)
+# Test complex nested conditions and edge cases
+
+set x = 10
+set y = 20
+set z = 30
+
+# Test 1: Multiple logical operators (single line)
+set result1 = "A" when x > 5 and y > 15 and z > 25 | "B" when x > 5 and y > 15 | "C" when x > 5 | "D"
+writeout("Test 1 - x={x}, y={y}, z={z}: result1={result1}")
+
+# Test 2: Nested arithmetic in conditions
+set result2 = "high" when (x + y) > 25 and (y * 2) > z | "medium" when (x + y) > 15 or z > 20 | "low"
+writeout("Test 2: result2={result2}")
+
+# Test 3: String comparisons with logical operators
+set name = "Alice"
+set age = 25
+set role = "admin" when name == "Alice" and age >= 21 | "user" when name == "Bob" or age >= 18 | "guest"
+writeout("Test 3 - name={name}, age={age}: role={role}")
+
+# Test 4: Not operator (fix false literal)
+set is_valid = true when not (x < 0 or y < 0) | false
+set status = "valid" when is_valid == true | "invalid"
+writeout("Test 4: is_valid={is_valid}, status={status}")
+
+# Test 5: Complex expression in value
+set calculated = (x * y) when x > 0 and y > 0 | (x + y) when x > 0 or y > 0 | 0
+writeout("Test 5: calculated={calculated}")
+
+# Test 6: Multiple OR conditions
+set category = "premium" when x >= 100 or y >= 100 or z >= 100 | "standard" when x >= 50 or y >= 50 or z >= 50 | "basic"
+writeout("Test 6: category={category}")
+
+# Test 7: Mixed types in conditions
+set score = 85
+set passed = "yes" when score >= 70 and not (score < 60) | "no"
+writeout("Test 7 - score={score}: passed={passed}")
+
+# Test 8: Parentheses grouping
+set logic_result = "case1" when (x > 5 and y < 25) or z == 30 | "case2" when x > 5 and (y < 25 or z == 30) | "case3"
+writeout("Test 8: logic_result={logic_result}")
+
+# Test 9: Function calls in conditions
+set text = "Hello World"
+set length_check = "long" when len(text) > 10 | "medium" when len(text) > 5 | "short"
+writeout("Test 9 - text='{text}': length_check={length_check}")
+
+# Test 10: Edge case - all false, should use default
+set edge1 = "first" when x > 100 | "second" when y > 100 | "third" when z > 100 | "default"
+writeout("Test 10: edge1={edge1}")
+
+# Test 11: Immediate true condition
+set edge2 = "immediate" when true | "never"
+writeout("Test 11: edge2={edge2}")
+
+# Test 12: Empty string handling
+set empty_test = "not empty" when name != "" | "empty"
+writeout("Test 12: empty_test={empty_test}")
+
+# Test 13: Complex arithmetic in both value and condition
+set complex = ((x * 2) + (y / 2)) when (x % 2 == 0 and y % 2 == 0) | (x + y) when (x + y) > 0 | -1
+writeout("Test 13: complex={complex}")
+
+# Test 14: Multiple conditions with same value
+set multi_condition = "hot" when x > 30 | "hot" when y > 30 | "warm" when x > 20 | "cool"
+writeout("Test 14: multi_condition={multi_condition}")
+
+# Test 15: Very long chain
+set chain = "A" when x > 90 | "B" when x > 80 | "C" when x > 70 | "D" when x > 60 | "E" when x > 50 | "F"
+writeout("Test 15: chain={chain}")
+
+# Now test variable changes
+writeout("=== Testing Variable Changes ===")
+
+set x = 100
+writeout("After x=100: result1={result1}, result2={result2}, category={category}, chain={chain}")
+
+set y = -5
+writeout("After y=-5: result1={result1}, is_valid={is_valid}, calculated={calculated}")
+
+set score = 95
+set z = 120
+writeout("After score=95, z=120: passed={passed}, category={category}, edge1={edge1}")
+
+# Test with string variable change
+set name = "Bob"
+set age = 17
+writeout("After name='Bob', age=17: role={role}")
+
+# Test boundary conditions
+set x = 5
+writeout("After x=5 (boundary): result1={result1}, chain={chain}")
+
+set x = 0
+set y = 0
+writeout("After x=0, y=0: is_valid={is_valid}, calculated={calculated}, complex={complex}")
