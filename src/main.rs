@@ -18,7 +18,8 @@ use crate::core::history::HistoryManager;
 use crate::core::change_engine::ChangeEngineManager;
 use rustyline::error::ReadlineError;  
 use ctrlc;  
-use crate::core::types::SimpleType;    
+use crate::core::types::SimpleType;
+use crate::core::template::render_template;    
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -923,14 +924,24 @@ fn execute_set_intent_clean(
     if let Some(Target::Variable(var_name)) = &intent.target {
         let value_str = intent.parameters.get("value")
             .ok_or("No value specified in set intent")?;
+        // Get propagation parameters from intent (already parsed during intent parsing)
+        let propagation_delay = intent.parameters.get("propagation_delay")
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0);
+        let propagation_limit = intent.parameters.get("propagation_limit")
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(usize::MAX);
+        
+        println!("DEBUG: Using propagation - delay: {}, limit: {}", propagation_delay, propagation_limit);
+        
         let declared_type = intent.parameters.get("declared_type")
             .and_then(|type_str| parse_simple_type(type_str));
         
-        // Remove the early return that was preventing actual execution!
-        // The type display should come AFTER setting the variable, not before
+        // Since value_str is already cleaned by intent parser, use it directly
+        let clean_value_str = value_str;
         
         // SPECIAL HANDLING FOR MULTI-LINE JSON OBJECTS
-        let trimmed_value = value_str.trim();
+        let trimmed_value = clean_value_str.trim();
         if trimmed_value.starts_with('{') && trimmed_value.contains('\n') {
             // This looks like multi-line JSON, clean it up
             match parse_multiline_json_properly(trimmed_value) {
@@ -939,21 +950,35 @@ fn execute_set_intent_clean(
                         Ok(parsed_value) => {
                             if env.has_active_transaction() {
                                 let placeholder = Value::Str("<?>".to_string());
-                                env.set_computed_with_type(var_name, placeholder, &expr, declared_type.clone());
+                                env.set_computed_with_propagation(var_name, placeholder, &expr, declared_type.clone(), propagation_delay, propagation_limit);
                                 let type_info = if let Some(ref t) = declared_type {
                                     format!(":{}", t.name())
                                 } else {
                                     "".to_string()
                                 };
-                                return Ok(format!("[🛠] Crafted: {}{} = {}", var_name, type_info, parsed_value.display()));
+                                let mut result = format!("[🛠] Crafted: {}{} = {}", var_name, type_info, parsed_value.display());
+                                if propagation_delay > 0 {
+                                    result.push_str(&format!(" (~-{})", propagation_delay));
+                                }
+                                if propagation_limit != usize::MAX {
+                                    result.push_str(&format!(" (~+{})", propagation_limit));
+                                }
+                                return Ok(result);
                             } else {
-                                env.set_computed_with_type(var_name, parsed_value.clone(), &expr, declared_type.clone());
+                                env.set_computed_with_propagation(var_name, parsed_value.clone(), &expr, declared_type.clone(), propagation_delay, propagation_limit);
                                 let type_info = if let Some(ref t) = declared_type {
                                     format!(":{}", t.name())
                                 } else {
                                     "".to_string()
                                 };
-                                return Ok(format!("[+] {}{} = {} (computed)", var_name, type_info, parsed_value.display()));
+                                let mut result = format!("[+] {}{} = {} (computed)", var_name, type_info, parsed_value.display());
+                                if propagation_delay > 0 {
+                                    result.push_str(&format!(" (~-{})", propagation_delay));
+                                }
+                                if propagation_limit != usize::MAX {
+                                    result.push_str(&format!(" (~+{})", propagation_limit));
+                                }
+                                return Ok(result);
                             }
                         }
                         Err(e) => {
@@ -977,15 +1002,22 @@ fn execute_set_intent_clean(
                             // Handle transaction case
                             if env.has_active_transaction() {
                                 let placeholder = Value::Str("<?>".to_string());
-                                env.set_computed_with_type(var_name, placeholder, &expr, declared_type.clone());
+                                env.set_computed_with_propagation(var_name, placeholder, &expr, declared_type.clone(), propagation_delay, propagation_limit);
                                 let type_info = if let Some(ref t) = declared_type {
                                     format!(":{}", t.name())
                                 } else {
                                     "".to_string()
                                 };
-                                return Ok(format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value.display()));
+                                let mut result = format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value.display());
+                                if propagation_delay > 0 {
+                                    result.push_str(&format!(" (~-{})", propagation_delay));
+                                }
+                                if propagation_limit != usize::MAX {
+                                    result.push_str(&format!(" (~+{})", propagation_limit));
+                                }
+                                return Ok(result);
                             } else {
-                                env.set_computed_with_type(var_name, value.clone(), &expr, declared_type.clone());
+                                env.set_computed_with_propagation(var_name, value.clone(), &expr, declared_type.clone(), propagation_delay, propagation_limit);
                                 
                                 let propagated = crate::core::propagate::propagate_from(env, var_name)
                                     .unwrap_or_default();
@@ -997,6 +1029,12 @@ fn execute_set_intent_clean(
                                 };
                                 let mut output = String::new();
                                 output.push_str(&format!("[+] {}{} = {} (computed)", var_name, type_info, value.display()));
+                                if propagation_delay > 0 {
+                                    output.push_str(&format!(" (~-{})", propagation_delay));
+                                }
+                                if propagation_limit != usize::MAX {
+                                    output.push_str(&format!(" (~+{})", propagation_limit));
+                                }
                                 output.push_str(&format!("\n  Expression: {}", expr));
                                 
                                 if !propagated.is_empty() {
@@ -1020,80 +1058,122 @@ fn execute_set_intent_clean(
         // CHECK IF IN TRANSACTION FIRST
         if env.has_active_transaction() {
              // Check if it's a simple number or string
-            let trimmed = value_str.trim();
+            let trimmed = clean_value_str.trim();
             
             // Check for simple numeric value
             if let Ok(num) = trimmed.parse::<i64>() {
                 let value = Value::Int(num);
-                env.set_direct_with_type(var_name, value.clone(), declared_type.clone());
+                env.set_direct_with_propagation(var_name, value.clone(), declared_type.clone(), propagation_delay, propagation_limit);
                 let type_info = if let Some(ref t) = declared_type {
                     format!(":{}", t.name())
                 } else {
                     "".to_string()
                 };
-                return Ok(format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value.display()));
+                let mut result = format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value.display());
+                if propagation_delay > 0 {
+                    result.push_str(&format!(" (~-{})", propagation_delay));
+                }
+                if propagation_limit != usize::MAX {
+                    result.push_str(&format!(" (~+{})", propagation_limit));
+                }
+                return Ok(result);
             }
             
             // Check for simple boolean
             if trimmed == "true" || trimmed == "false" {
                 let value = Value::Bool(trimmed == "true");
-                env.set_direct_with_type(var_name, value.clone(), declared_type.clone());
+                env.set_direct_with_propagation(var_name, value.clone(), declared_type.clone(), propagation_delay, propagation_limit);
                 let type_info = if let Some(ref t) = declared_type {
                     format!(":{}", t.name())
                 } else {
                     "".to_string()
                 };
-                return Ok(format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value.display()));
+                let mut result = format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value.display());
+                if propagation_delay > 0 {
+                    result.push_str(&format!(" (~-{})", propagation_delay));
+                }
+                if propagation_limit != usize::MAX {
+                    result.push_str(&format!(" (~+{})", propagation_limit));
+                }
+                return Ok(result);
             }
             
             // Check for quoted string
             if trimmed.starts_with('"') && trimmed.ends_with('"') {
                 let inner = &trimmed[1..trimmed.len()-1];
                 let value = Value::Str(inner.to_string());
-                env.set_direct_with_type(var_name, value.clone(), declared_type.clone());
+                env.set_direct_with_propagation(var_name, value.clone(), declared_type.clone(), propagation_delay, propagation_limit);
                 let type_info = if let Some(ref t) = declared_type {
                     format!(":{}", t.name())
                 } else {
                     "".to_string()
                 };
-                return Ok(format!("[🛠] Crafted: {}{} = \"{}\"", var_name, type_info, inner));
+                let mut result = format!("[🛠] Crafted: {}{} = \"{}\"", var_name, type_info, inner);
+                if propagation_delay > 0 {
+                    result.push_str(&format!(" (~-{})", propagation_delay));
+                }
+                if propagation_limit != usize::MAX {
+                    result.push_str(&format!(" (~+{})", propagation_limit));
+                }
+                return Ok(result);
             }
             
             // Parse expression but don't evaluate yet
-            match crate::core::expr::parse_expression(value_str) {
+            match crate::core::expr::parse_expression(&clean_value_str) {
                 Ok(expr) => {
                     // During transaction, we store the expression unevaluated
                     let placeholder = Value::Str("<?>".to_string());
-                    env.set_computed_with_type(var_name, placeholder, &expr, declared_type.clone());
+                    env.set_computed_with_propagation(var_name, placeholder, &expr, declared_type.clone(), propagation_delay, propagation_limit);
                     let type_info = if let Some(ref t) = declared_type {
                         format!(":{}", t.name())
                     } else {
                         "".to_string()
                     };
-                    return Ok(format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value_str));
+                    let mut result = format!("[🛠] Crafted: {}{} = {}", var_name, type_info, clean_value_str);
+                    if propagation_delay > 0 {
+                        result.push_str(&format!(" (~-{})", propagation_delay));
+                    }
+                    if propagation_limit != usize::MAX {
+                        result.push_str(&format!(" (~+{})", propagation_limit));
+                    }
+                    return Ok(result);
                 }
                 Err(_) => {
-                    match parse_simple_value(value_str, intent.parameters.get("type").map(|s: &String| s.as_str())) {
+                    match parse_simple_value(&clean_value_str, intent.parameters.get("type").map(|s: &String| s.as_str())) {
                         Ok(value) => {
-                            env.set_direct_with_type(var_name, value.clone(), declared_type.clone());
+                            env.set_direct_with_propagation(var_name, value.clone(), declared_type.clone(), propagation_delay, propagation_limit);
                             let type_info = if let Some(ref t) = declared_type {
                                 format!(":{}", t.name())
                             } else {
                                 "".to_string()
                             };
-                            return Ok(format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value.display()));
+                            let mut result = format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value.display());
+                            if propagation_delay > 0 {
+                                result.push_str(&format!(" (~-{})", propagation_delay));
+                            }
+                            if propagation_limit != usize::MAX {
+                                result.push_str(&format!(" (~+{})", propagation_limit));
+                            }
+                            return Ok(result);
                         }
                         Err(_) => {
                             // Treat as string literal
-                            let expr = crate::core::expr::Expr::Literal(Value::Str(value_str.to_string()));
+                            let expr = crate::core::expr::Expr::Literal(Value::Str(clean_value_str.to_string()));
                             let placeholder = Value::Str("<?>".to_string());
-                            env.set_computed_with_type(var_name, placeholder, &expr, declared_type.clone());
+                            env.set_computed_with_propagation(var_name, placeholder, &expr, declared_type.clone(), propagation_delay, propagation_limit);
                             let type_info = if let Some(ref t) = declared_type {
                                 format!(":{}", t.name())
                             } else {
                                 "".to_string()
                             };
-                            return Ok(format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value_str));
+                            let mut result = format!("[🛠] Crafted: {}{} = {}", var_name, type_info, clean_value_str);
+                            if propagation_delay > 0 {
+                                result.push_str(&format!(" (~-{})", propagation_delay));
+                            }
+                            if propagation_limit != usize::MAX {
+                                result.push_str(&format!(" (~+{})", propagation_limit));
+                            }
+                            return Ok(result);
                         }
                     }
                 }
@@ -1102,11 +1182,11 @@ fn execute_set_intent_clean(
         
         // Original non-transaction code continues here...
         // Check if it contains interpolation
-        if value_str.contains('{') && value_str.contains('}') {
-            match parse_interpolated_string(value_str, env) {
+        if clean_value_str.contains('{') && clean_value_str.contains('}') {
+            match parse_interpolated_string(&clean_value_str, env) {
                 Ok(interpolated) => {
                     let value = Value::Str(interpolated.clone());
-                    env.set_direct_with_type(var_name, value.clone(), declared_type.clone());
+                    env.set_direct_with_propagation(var_name, value.clone(), declared_type.clone(), propagation_delay, propagation_limit);
                     
                     let propagated = crate::core::propagate::propagate_from(env, var_name)
                         .unwrap_or_default();
@@ -1118,6 +1198,12 @@ fn execute_set_intent_clean(
                     };
                     let mut output = String::new();
                     output.push_str(&format!("[+] {}{} = {}", var_name, type_info, interpolated));
+                    if propagation_delay > 0 {
+                        output.push_str(&format!(" (~-{})", propagation_delay));
+                    }
+                    if propagation_limit != usize::MAX {
+                        output.push_str(&format!(" (~+{})", propagation_limit));
+                    }
                     
                     if !propagated.is_empty() {
                         output.push_str(&format!("\n  → Updated: {}", propagated.join(", ")));
@@ -1132,12 +1218,13 @@ fn execute_set_intent_clean(
         }
 
         // Check for conditional expression
-        if looks_like_conditional(value_str) {
-            match parse_conditional_expression(value_str) {
+        if looks_like_conditional(&clean_value_str) {
+            match parse_conditional_expression(&clean_value_str) {
                 Ok(expr) => {
                     match crate::core::expr::evaluate(&expr, env) {
                         Ok(value) => {
-                            env.set_computed_with_type(var_name, value.clone(), &expr, declared_type.clone());
+                            // Make sure propagation parameters are passed here
+                            env.set_computed_with_propagation(var_name, value.clone(), &expr, declared_type.clone(), propagation_delay, propagation_limit);
                             
                             let type_info = if let Some(ref t) = declared_type {
                                 format!(":{}", t.name())
@@ -1146,14 +1233,20 @@ fn execute_set_intent_clean(
                             };
                             let mut output = String::new();
                             output.push_str(&format!("[+] {}{} = {} (conditional)", var_name, type_info, value.display()));
+                            if propagation_delay > 0 {
+                                output.push_str(&format!(" (~-{})", propagation_delay));
+                            }
+                            if propagation_limit != usize::MAX {
+                                output.push_str(&format!(" (~+{})", propagation_limit));
+                            }
                             output.push_str(&format!("\n  Expression: {}", expr));
                             
                             return Ok(output);
                         }
                         Err(e) => {
-                            // Can't evaluate yet
+                            // Can't evaluate yet - still use propagation control
                             let placeholder = Value::Str("<?>".to_string());
-                            env.set_computed_with_type(var_name, placeholder, &expr, declared_type.clone());
+                            env.set_computed_with_propagation(var_name, placeholder, &expr, declared_type.clone(), propagation_delay, propagation_limit);
                             
                             let type_info = if let Some(ref t) = declared_type {
                                 format!(":{}", t.name())
@@ -1162,6 +1255,12 @@ fn execute_set_intent_clean(
                             };
                             let mut output = String::new();
                             output.push_str(&format!("[?] {}{} = <?> (pending)", var_name, type_info));
+                            if propagation_delay > 0 {
+                                output.push_str(&format!(" (~-{})", propagation_delay));
+                            }
+                            if propagation_limit != usize::MAX {
+                                output.push_str(&format!(" (~+{})", propagation_limit));
+                            }
                             output.push_str(&format!("\n  Expression: {}", expr));
                             output.push_str(&format!("\n  Note: {}", e));
                             
@@ -1176,14 +1275,14 @@ fn execute_set_intent_clean(
         }
         
         // Try as expression
-        match crate::core::expr::parse_expression(value_str) {
+        match crate::core::expr::parse_expression(&clean_value_str) {
             Ok(expr) => {
                 match crate::core::expr::evaluate(&expr, env) {
                     Ok(value) => {
                         let type_hint = intent.parameters.get("type");
                         let final_value = apply_type_hint(value, type_hint.map(|s: &String| s.as_str()))?;
                         
-                        env.set_computed_with_type(var_name, final_value.clone(), &expr, declared_type.clone());
+                        env.set_computed_with_propagation(var_name, final_value.clone(), &expr, declared_type.clone(), propagation_delay, propagation_limit);
                         
                         let propagated = crate::core::propagate::propagate_from(env, var_name)
                             .unwrap_or_default();
@@ -1195,6 +1294,12 @@ fn execute_set_intent_clean(
                         };
                         let mut output = String::new();
                         output.push_str(&format!("[+] {}{} = {} (computed)", var_name, type_info, final_value.display()));
+                        if propagation_delay > 0 {
+                            output.push_str(&format!(" (~-{})", propagation_delay));
+                        }
+                        if propagation_limit != usize::MAX {
+                            output.push_str(&format!(" (~+{})", propagation_limit));
+                        }
                         output.push_str(&format!("\n  Expression: {}", expr));
                         
                         if !propagated.is_empty() {
@@ -1205,8 +1310,8 @@ fn execute_set_intent_clean(
                     }
                     Err(_) => {
                         // Fall back to simple value
-                        let value = parse_simple_value(value_str, intent.parameters.get("type").map(|s: &String| s.as_str()))?;
-                        env.set_direct_with_type(var_name, value.clone(), declared_type.clone());
+                        let value = parse_simple_value(&clean_value_str, intent.parameters.get("type").map(|s: &String| s.as_str()))?;
+                        env.set_direct_with_propagation(var_name, value.clone(), declared_type.clone(), propagation_delay, propagation_limit);
                         
                         let propagated = crate::core::propagate::propagate_from(env, var_name)
                             .unwrap_or_default();
@@ -1218,6 +1323,12 @@ fn execute_set_intent_clean(
                         };
                         let mut output = String::new();
                         output.push_str(&format!("[+] {}{} = {} (direct)", var_name, type_info, value.display()));
+                        if propagation_delay > 0 {
+                            output.push_str(&format!(" (~-{})", propagation_delay));
+                        }
+                        if propagation_limit != usize::MAX {
+                            output.push_str(&format!(" (~+{})", propagation_limit));
+                        }
                         
                         if !propagated.is_empty() {
                             output.push_str(&format!("\n  → Updated: {}", propagated.join(", ")));
@@ -1229,8 +1340,8 @@ fn execute_set_intent_clean(
             }
             Err(_) => {
                 // Simple value
-                let value = parse_simple_value(value_str, intent.parameters.get("type").map(|s: &String| s.as_str()))?;
-                env.set_direct_with_type(var_name, value.clone(), declared_type.clone());
+                let value = parse_simple_value(&clean_value_str, intent.parameters.get("type").map(|s: &String| s.as_str()))?;
+                env.set_direct_with_propagation(var_name, value.clone(), declared_type.clone(), propagation_delay, propagation_limit);
                 
                 let propagated = crate::core::propagate::propagate_from(env, var_name)
                     .unwrap_or_default();
@@ -1242,6 +1353,12 @@ fn execute_set_intent_clean(
                 };
                 let mut output = String::new();
                 output.push_str(&format!("[+] {}{} = {} (direct)", var_name, type_info, value.display()));
+                if propagation_delay > 0 {
+                    output.push_str(&format!(" (~-{})", propagation_delay));
+                }
+                if propagation_limit != usize::MAX {
+                    output.push_str(&format!(" (~+{})", propagation_limit));
+                }
                 
                 if !propagated.is_empty() {
                     output.push_str(&format!("\n  → Updated: {}", propagated.join(", ")));
@@ -2132,88 +2249,7 @@ fn apply_type_hint(value: crate::core::types::Value, hint: Option<&str>) -> Resu
 }
 
 fn parse_interpolated_string(input: &str, env: &Env) -> Result<String, String> {
-    let mut result = String::new();
-    let mut current = String::new();
-    let mut in_braces = false;
-    let mut brace_depth = 0;
-    let mut chars = input.chars().peekable();
-    
-    while let Some(ch) = chars.next() {
-        if ch == '\\' && !in_braces {
-            if let Some(&next) = chars.peek() {
-                match next {
-                    '{' | '}' | '\\' => {
-                        result.push(next);
-                        chars.next();
-                    }
-                    _ => {
-                        result.push('\\');
-                    }
-                }
-            } else {
-                result.push('\\');
-            }
-            continue;
-        }
-        
-        match ch {
-            '{' if !in_braces => {
-                if !current.is_empty() {
-                    result.push_str(&current);
-                    current.clear();
-                }
-                in_braces = true;
-                brace_depth = 1;
-                current.push('{');
-            }
-            '{' if in_braces => {
-                brace_depth += 1;
-                current.push(ch);
-            }
-            '}' if in_braces => {
-                current.push(ch);
-                brace_depth -= 1;
-                if brace_depth == 0 {
-                    let expr_with_braces = current.clone();
-                    let expr_str = &expr_with_braces[1..expr_with_braces.len()-1];
-                    
-                    if expr_str.trim().is_empty() {
-                        return Err("Empty interpolation {}".to_string());
-                    }
-                    
-                    match crate::core::expr::parse_expression(expr_str) {
-                        Ok(expr) => {
-                            match crate::core::expr::evaluate(&expr, env) {
-                                Ok(value) => result.push_str(&value.to_string()),
-                                Err(e) => return Err(format!("Cannot evaluate '{}': {}", expr_str, e)),
-                            }
-                        }
-                        Err(e) => return Err(format!("Invalid expression '{}': {}", expr_str, e)),
-                    }
-                    
-                    current.clear();
-                    in_braces = false;
-                }
-            }
-            _ => {
-                if in_braces {
-                    current.push(ch);
-                } else {
-                    result.push(ch);
-                }
-            }
-        }
-    }
-    
-    if in_braces {
-        return Err("Unclosed interpolation {".to_string());
-    }
-    
-    if !current.is_empty() {
-        result.push_str(&current);
-    }
-    
-    Ok(result)
+    render_template(input, env)
 }
 
 // Book metaphor execution handlers
@@ -3630,7 +3666,7 @@ fn process_script_content(
     let mut error_count = 0;
     
     let mut lines = content.lines().enumerate().peekable();
-    let mut accumulated_block = String::new();
+    let mut accumulated_statement = String::new();
     let mut in_multiline_block = false;
     let mut multiline_type = MultilineType::Generic;
     
@@ -3639,9 +3675,12 @@ fn process_script_content(
         
         // Skip empty lines and comments
         if line.is_empty() {
-            if in_multiline_block {
-                accumulated_block.push_str(original_line);
-                accumulated_block.push('\n');
+            // Only accumulate if we're in a multiline context
+            if in_multiline_block || !accumulated_statement.is_empty() {
+                if !accumulated_statement.is_empty() {
+                    accumulated_statement.push_str(original_line);
+                    accumulated_statement.push('\n');
+                }
             }
             continue;
         }
@@ -3653,34 +3692,67 @@ fn process_script_content(
         };
         
         if line_without_comment.is_empty() {
-            if in_multiline_block {
-                accumulated_block.push_str(original_line);
-                accumulated_block.push('\n');
+            if in_multiline_block || !accumulated_statement.is_empty() {
+                if !accumulated_statement.is_empty() {
+                    accumulated_statement.push_str(original_line);
+                    accumulated_statement.push('\n');
+                }
             }
             continue;
         }
         
-        // Detect multiline start
-        if !in_multiline_block {
-            if is_multiline_block_start(line_without_comment) {
+        // Check for statement termination with semicolon
+        let ends_with_semicolon = line_without_comment.ends_with(';');
+        let statement_content = if ends_with_semicolon {
+            &line_without_comment[..line_without_comment.len()-1]
+        } else {
+            line_without_comment
+        };
+        
+        // If we have accumulated content, add current line
+        if !accumulated_statement.is_empty() || (!ends_with_semicolon && !in_multiline_block) {
+            if accumulated_statement.is_empty() {
+                accumulated_statement.push_str(original_line);
+            } else {
+                accumulated_statement.push_str(&format!("\n{}", original_line));
+            }
+        }
+        
+        // If statement is terminated with semicolon, process it
+        if ends_with_semicolon && !in_multiline_block {
+            // Process the complete statement
+            match execute_script_command(&statement_content, env, history, history_manager, engine_manager, library, printer) {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    printer.error(&format!("Line {}: {}", line_num + 1, e));
+                    error_count += 1;
+                }
+            }
+            accumulated_statement.clear();
+            continue;
+        }
+        
+        // Detect multiline start (only if not already accumulating)
+        if !in_multiline_block && accumulated_statement.is_empty() {
+            if is_multiline_block_start(statement_content) {
                 in_multiline_block = true;
-                multiline_type = detect_multiline_type(line_without_comment);
-                accumulated_block.push_str(original_line);
-                accumulated_block.push('\n');
+                multiline_type = detect_multiline_type(statement_content);
+                accumulated_statement.push_str(original_line);
+                accumulated_statement.push('\n');
                 continue;
             }
         }
         
         // Handle multiline block end
         if in_multiline_block {
-            accumulated_block.push_str(original_line);
-            accumulated_block.push('\n');
+            accumulated_statement.push_str(original_line);
+            accumulated_statement.push('\n');
             
             if is_multiline_block_end(line_without_comment) || line_without_comment == ";;" {
                 in_multiline_block = false;
                 
                 // Execute the complete multi-line block
-                match execute_script_command(&accumulated_block, env, history, history_manager, engine_manager, library, printer) {
+                match execute_script_command(&accumulated_statement, env, history, history_manager, engine_manager, library, printer) {
                     Ok(_) => success_count += 1,
                     Err(e) => {
                         printer.error(&format!("Block ending line {}: {}", line_num + 1, e));
@@ -3688,7 +3760,7 @@ fn process_script_content(
                     }
                 }
                 
-                accumulated_block.clear();
+                accumulated_statement.clear();
                 continue;
             }
             
@@ -3696,8 +3768,8 @@ fn process_script_content(
             continue;
         }
         
-        // Handle system commands
-        match line_without_comment {
+        // Handle system commands (these don't need semicolons)
+        match statement_content {
             "env" => {
                 show_env_clean(env, printer);
                 success_count += 1;
@@ -3716,23 +3788,43 @@ fn process_script_content(
             _ => {}
         }
         
-        // Execute single-line commands
-        match execute_script_command(line_without_comment, env, history, history_manager, engine_manager, library, printer) {
-            Ok(_) => success_count += 1,
-            Err(e) => {
-                printer.error(&format!("Line {}: {}", line_num + 1, e));
-                error_count += 1;
+        // If we reach here and have accumulated content, it means we're in a multiline
+        // statement that hasn't been terminated with semicolon
+        if !accumulated_statement.is_empty() && !ends_with_semicolon {
+            // Continue accumulating until we get a semicolon or explicit multiline end
+            continue;
+        }
+        
+        // Execute single-line commands that don't need semicolons for backward compatibility
+        // But warn about missing semicolons eventually
+        if accumulated_statement.is_empty() {
+            match execute_script_command(statement_content, env, history, history_manager, engine_manager, library, printer) {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    printer.error(&format!("Line {}: {}", line_num + 1, e));
+                    error_count += 1;
+                }
             }
         }
     }
     
-    // Handle any remaining accumulated block
-    if !accumulated_block.is_empty() && in_multiline_block {
-        match execute_script_command(&accumulated_block, env, history, history_manager, engine_manager, library, printer) {
-            Ok(_) => success_count += 1,
-            Err(e) => {
-                printer.error(&format!("Incomplete multi-line block: {}", e));
-                error_count += 1;
+    // Handle any remaining accumulated statement (backward compatibility)
+    if !accumulated_statement.is_empty() {
+        // Strip any trailing semicolons for backward compatibility
+        let final_content = if accumulated_statement.trim_end().ends_with(';') {
+            let trimmed = accumulated_statement.trim_end();
+            &trimmed[..trimmed.len()-1]
+        } else {
+            &accumulated_statement
+        };
+        
+        if !final_content.trim().is_empty() {
+            match execute_script_command(final_content, env, history, history_manager, engine_manager, library, printer) {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    printer.error(&format!("Incomplete statement: {}", e));
+                    error_count += 1;
+                }
             }
         }
     }

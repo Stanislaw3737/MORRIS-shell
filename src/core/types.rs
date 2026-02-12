@@ -53,23 +53,38 @@ impl SimpleType {
 pub struct Variable {
     pub value: Value,
     pub is_constant: bool,
-    pub expression: Option<String>,  // Store as string for display
+    pub expression: Option<String>,
     pub source: VariableSource,
-    pub last_updated: DateTime<Utc>,  // NEW FIELD
+    pub last_updated: DateTime<Utc>,
     pub update_count: u64, 
-    // NEW: Add type information
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub declared_type: Option<SimpleType>,  // Explicitly declared type
+    pub declared_type: Option<SimpleType>,
+    // NEW: Propagation control fields
+    #[serde(default)]
+    pub propagation_delay: usize,     // ~-N: ignore first N propagations
+    #[serde(default = "usize_max")]
+    pub propagation_limit: usize,     // ~+N: become immune after N propagations
+    #[serde(default)]
+    pub delay_counter: usize,         // Tracks ignored propagations
+    #[serde(default)]
+    pub limit_counter: usize,         // Tracks successful propagations
+}
+
+
+fn usize_max() -> usize {
+    usize::MAX
 }
 
 impl Variable {
 
-    pub fn new_with_type(
+    pub fn new_with_propagation(
         value: Value,
         is_constant: bool,
         expression: Option<String>,
         source: VariableSource,
         declared_type: Option<SimpleType>,
+        delay: usize,    // ~-N: delay count
+        limit: usize,    // ~+N: limit count (use usize::MAX for no limit)
     ) -> Self {
         Self {
             value,
@@ -79,7 +94,22 @@ impl Variable {
             last_updated: Utc::now(),
             update_count: 0,
             declared_type,
+            propagation_delay: delay,
+            propagation_limit: limit,
+            delay_counter: 0,         // Fix: use correct field name
+            limit_counter: 0,         // Fix: use correct field name
         }
+    }
+    
+    // Existing constructor with defaults
+    pub fn new_with_type(
+        value: Value,
+        is_constant: bool,
+        expression: Option<String>,
+        source: VariableSource,
+        declared_type: Option<SimpleType>,
+    ) -> Self {
+        Self::new_with_propagation(value, is_constant, expression, source, declared_type, 0, usize::MAX)
     }
     
     // Keep existing constructor for backward compatibility
@@ -100,6 +130,54 @@ impl Variable {
             self.value.type_name()
         }
     }
+
+    pub fn should_propagate(&mut self) -> bool {
+        // Constants never propagate
+        if self.is_constant {
+            println!("DEBUG: Variable is constant, propagation blocked");
+            return false;
+        }
+        
+        // Handle delay (~-N: ignore first N changes)
+        if self.delay_counter < self.propagation_delay {
+            self.delay_counter += 1;
+            println!("DEBUG: Variable propagation delayed ({}/{})", self.delay_counter, self.propagation_delay);
+            return false;
+        }
+        
+        // Handle limit (~+N: become immune after N changes)
+        if self.propagation_limit != usize::MAX && self.limit_counter >= self.propagation_limit {
+            println!("DEBUG: Variable propagation immune ({}/{})", self.limit_counter, self.propagation_limit);
+            return false;
+        }
+        
+        // Increment propagation counter and allow propagation
+        self.limit_counter += 1;
+        println!("DEBUG: Variable propagation allowed (delay: {}/{}, limit: {}/{})", 
+            self.delay_counter, self.propagation_delay,
+            self.limit_counter, self.propagation_limit);
+        true
+    }
+    
+    // Reset counters (useful for manual control)
+    pub fn reset_propagation_counters(&mut self) {
+        self.delay_counter = 0;
+        self.limit_counter = 0;
+    }
+
+    pub fn propagation_status(&self) -> String {
+    if self.is_constant {
+        "frozen".to_string()
+    } else if self.delay_counter < self.propagation_delay {
+        format!("delayed ({}/{})", self.delay_counter, self.propagation_delay)
+    } else if self.propagation_limit != usize::MAX && self.limit_counter >= self.propagation_limit {
+        format!("immune ({}/{})", self.limit_counter, self.propagation_limit)
+    } else {
+        format!("active (delay: {}/{}, limit: {}/{})", 
+               self.delay_counter, self.propagation_delay,
+               self.limit_counter, self.propagation_limit)
+    }
+}
 }
 
 impl Value {

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use crate::core::expr::parse_variable_with_type;
+use crate::core::expr::parse_propagation_suffix;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Verb {
@@ -912,35 +913,49 @@ pub fn parse_to_intent(input: &str) -> Result<Intent, String> {
 fn parse_set_intent(input: &str) -> Result<Intent, String> {
     let content = input.trim_start_matches("set ").trim();
     
-    // Handle type annotations: set var:type = value [as type]
+    // FIRST: Find the equals position to separate variable from value
     let equals_pos = find_equals_position(content)?;
     if equals_pos == 0 {
         return Err("Set intent requires format: set var = value".to_string());
     }
     
-    let (var_part, value_part) = content.split_at(equals_pos);
-    let var_part = var_part.trim_end_matches('=').trim();
-    let value_part = value_part[1..].trim(); // Skip the '='
+    let var_part = &content[..equals_pos].trim_end_matches('=').trim();
+    let value_part = &content[equals_pos + 1..].trim(); // Skip the '='
+    
+    // SECOND: Parse propagation suffix from the VALUE part only
+    let (clean_value_part, delay, limit) = parse_propagation_suffix(value_part)?;
     
     // Parse variable with potential type annotation
     let (var_name, declared_type) = parse_variable_with_type(var_part)?;
     
     let mut intent = Intent::new(Verb::Set)
         .with_target(Target::Variable(var_name))
-        .with_parameter("value", value_part);
+        .with_parameter("value", &clean_value_part);
     
-    // Store type information as metadata
+    // Store type information if present
     if let Some(t) = declared_type {
         intent = intent.with_parameter("declared_type", t.name());
     }
     
-    // Handle existing type hints (as int, as bool, etc.)
-    let value_part = handle_existing_type_hints(value_part, &mut intent)?;
+    // Store propagation control information
+    if delay > 0 {
+        intent = intent.with_parameter("propagation_delay", &delay.to_string());
+    }
+    if limit != usize::MAX {
+        intent = intent.with_parameter("propagation_limit", &limit.to_string());
+    }
     
     Ok(intent)
 }
 
 fn find_equals_position(s: &str) -> Result<usize, String> {
+    let s = s.trim();
+    
+    // If this is just a value expression (no variable name and equals), return 0
+    if !s.contains('=') {
+        return Ok(0);
+    }
+    
     let mut in_quotes = false;
     let mut quote_char = '"';
     let mut paren_depth = 0;

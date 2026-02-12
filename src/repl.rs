@@ -38,55 +38,76 @@ impl Repl {
         })
     }
     
-    
-
     pub fn read_line(&mut self, prompt: &str) -> Result<Option<String>, ReadlineError> {
-        let mut input_lines = Vec::new();
+        let mut input_lines = Vec::<String>::new();
         let mut in_multiline = false;
+        let mut accumulated_statement = String::new();
         
         loop {
             let current_prompt = if in_multiline { "... " } else { prompt };
             
             match self.editor.readline(current_prompt) {
                 Ok(line) => {
-                    let line_trimmed = line.trim_end();
+                    let line_trimmed = line.trim();
                     
-                    // Check if we're entering multi-line mode
-                    if !in_multiline && self.should_enter_multiline(&line) {
-                        in_multiline = true;
-                        input_lines.push(line);
+                    // Handle Ctrl+C cancellation
+                    if line_trimmed.is_empty() && in_multiline {
+                        println!("^C - Cancelled multi-line input");
+                        in_multiline = false;
+                        accumulated_statement.clear();
                         continue;
                     }
                     
-                    // Check for multi-line end with ;;
-                    if in_multiline && line_trimmed == ";;" {
-                        // Remove the ;; line and process the multi-line input
-                        let full_input = input_lines.join("\n");
-                        if !full_input.trim().is_empty() {
-                            self.editor.add_history_entry(&full_input)?;
-                            return Ok(Some(full_input));
+                    // Check for semicolon termination (complete statement)
+                    if line_trimmed.ends_with(';') {
+                        let statement = if accumulated_statement.is_empty() {
+                            // Single line statement
+                            line_trimmed[..line_trimmed.len()-1].to_string() // Remove semicolon
+                        } else {
+                            // Complete the multiline statement
+                            accumulated_statement.push_str(&line);
+                            let full_statement = accumulated_statement.trim();
+                            let result = full_statement[..full_statement.len()-1].to_string(); // Remove semicolon
+                            accumulated_statement.clear();
+                            result
+                        };
+                        
+                        if !statement.trim().is_empty() {
+                            self.editor.add_history_entry(statement.trim())?;
+                            return Ok(Some(statement.trim().to_string()));
                         }
                         return Ok(None);
                     }
                     
-                    // Continue collecting multi-line input
-                    if in_multiline {
-                        input_lines.push(line);
+                    // Check if we should enter multiline mode
+                    if !in_multiline && (self.should_enter_multiline(&line) || !accumulated_statement.is_empty()) {
+                        in_multiline = true;
+                        accumulated_statement.push_str(&line);
+                        accumulated_statement.push('\n');
                         continue;
                     }
                     
-                    // Single line command
-                    if !line_trimmed.is_empty() {
-                        self.editor.add_history_entry(&line)?;
-                        return Ok(Some(line));
+                    // In multiline mode, accumulate
+                    if in_multiline {
+                        accumulated_statement.push_str(&line);
+                        accumulated_statement.push('\n');
+                        continue;
                     }
+                    
+                    // Single line commands (system commands, etc.)
+                    // These don't require semicolons for backward compatibility
+                    if !line_trimmed.is_empty() {
+                        self.editor.add_history_entry(line_trimmed)?;
+                        return Ok(Some(line_trimmed.to_string()));
+                    }
+                    
                     return Ok(None);
                 }
                 Err(ReadlineError::Interrupted) => {
-                    if in_multiline {
+                    if in_multiline || !accumulated_statement.is_empty() {
                         println!("^C - Cancelled multi-line input");
                         in_multiline = false;
-                        input_lines.clear();
+                        accumulated_statement.clear();
                         continue;
                     } else {
                         println!("^C");
@@ -94,12 +115,13 @@ impl Repl {
                     }
                 }
                 Err(ReadlineError::Eof) => {
-                    if in_multiline {
-                        // Process what we have so far
-                        let full_input = input_lines.join("\n");
-                        if !full_input.trim().is_empty() {
-                            self.editor.add_history_entry(&full_input)?;
-                            return Ok(Some(full_input));
+                    if in_multiline || !accumulated_statement.is_empty() {
+                        // Process what we have
+                        if !accumulated_statement.is_empty() {
+                            self.editor.add_history_entry(accumulated_statement.as_str())?;
+                            let result = accumulated_statement.clone();
+                            accumulated_statement.clear();
+                            return Ok(Some(result));
                         }
                     }
                     println!("exit");
@@ -113,31 +135,29 @@ impl Repl {
     fn should_enter_multiline(&self, line: &str) -> bool {
         let line = line.trim();
         
-        // Existing conditions
+        // Don't enter multiline for system commands
+        match line {
+            "env" | "history" | "clear" => return false,
+            _ => {}
+        }
+        
+        // Enter multiline for complex expressions
         line.ends_with('{') || 
         line.starts_with("define intent") ||
-        line.starts_with("define ") && line.contains('{') ||
-        (line.starts_with('{') && line.contains(":")) ||
-        
-        // NEW: Enhanced match detection
-        line.starts_with("match ") ||
-        
-        // NEW: Enhanced conditional detection
-        (line.contains('|') && line.contains("when")) ||
+        (line.contains('|') && (line.contains("when") || line.contains("otherwise"))) ||
         line.trim_end().ends_with("when") ||
         line.trim_end().ends_with("|") ||
-        
-        // NEW: Likely continuation patterns
-        line.trim_end().ends_with("and") ||
-        line.trim_end().ends_with("or") ||
-        (line.contains(" | ") && !line.contains(";;"))
+        line.starts_with("match ")
     }
 
     fn should_exit_multiline(&self, line: &str) -> bool {
         let line = line.trim();
-        line == "}" || 
-        (line.ends_with('}') && !line.contains('{')) || // JSON object end
-        (line.starts_with('}') && line.len() <= 3)
+        // Exit multiline when we see a semicolon
+        line.ends_with(';')
+    }
+
+    fn is_statement_complete(line: &str) -> bool {
+        line.trim_end().ends_with(';')
     }
     pub fn save_history(&mut self) -> Result<(), String> {
         self.editor.save_history(&self.history_file)
