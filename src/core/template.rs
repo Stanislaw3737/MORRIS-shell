@@ -470,3 +470,95 @@ pub fn extract_dollar_params(template: &str) -> Vec<String> {
     
     unique_params
 }
+
+pub fn render_template(template: &str, env: &Env) -> Result<String, String> {
+    let mut result = String::new();
+    let mut chars = template.chars().peekable();
+    
+    while let Some(ch) = chars.next() {
+        match ch {
+            '$' => {
+                // Handle $var or ${var} syntax
+                let var_name = parse_dollar_variable(&mut chars)?;
+                if let Some(value) = env.get_value(&var_name) {
+                    result.push_str(&value.to_string());
+                } else {
+                    return Err(format!("Variable '{}' not found", var_name));
+                }
+            }
+            '{' => {
+                // Handle existing {var} syntax
+                let var_name = parse_curly_variable(&mut chars)?;
+                if let Some(value) = env.get_value(&var_name) {
+                    result.push_str(&value.to_string());
+                } else {
+                    return Err(format!("Variable '{}' not found", var_name));
+                }
+            }
+            '\\' => {
+                // Handle escape sequences
+                if let Some(&next_ch) = chars.peek() {
+                    match next_ch {
+                        '$' | '{' | '}' => {
+                            result.push(chars.next().unwrap());
+                        }
+                        _ => {
+                            result.push('\\');
+                            result.push(next_ch);
+                            chars.next();
+                        }
+                    }
+                } else {
+                    result.push('\\');
+                }
+            }
+            _ => result.push(ch),
+        }
+    }
+    
+    Ok(result)
+}
+
+fn parse_dollar_variable(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<String, String> {
+    // Check for ${var} syntax
+    if let Some(&next) = chars.peek() {
+        if next == '{' {
+            chars.next(); // consume '{'
+            let mut var_name = String::new();
+            while let Some(ch) = chars.next() {
+                if ch == '}' {
+                    return Ok(var_name);
+                }
+                var_name.push(ch);
+            }
+            return Err("Unclosed ${ variable".to_string());
+        }
+    }
+    
+    // Parse simple $var syntax
+    let mut var_name = String::new();
+    while let Some(&ch) = chars.peek() {
+        if ch.is_alphanumeric() || ch == '_' {
+            var_name.push(chars.next().unwrap());
+        } else {
+            break;
+        }
+    }
+    
+    if var_name.is_empty() {
+        Err("Empty variable name after $".to_string())
+    } else {
+        Ok(var_name)
+    }
+}
+
+fn parse_curly_variable(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<String, String> {
+    let mut var_name = String::new();
+    while let Some(ch) = chars.next() {
+        if ch == '}' {
+            return Ok(var_name);
+        }
+        var_name.push(ch);
+    }
+    Err("Unclosed { variable".to_string())
+}

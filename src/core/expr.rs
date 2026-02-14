@@ -4,6 +4,7 @@ use crate::core::env::Env;
 use crate::core::builtins;
 use std::collections::HashMap;
 use crate::core::types::SimpleType;
+use crate::core::template::render_template;
 
 #[derive(Debug, Clone)]
 pub enum Expr {
@@ -901,6 +902,17 @@ pub fn parse_expression(input: &str) -> Result<Expr, String> {
 
 pub fn evaluate(expr: &Expr, env: &Env) -> Result<Value, String> {
     match expr {
+        Expr::Literal(Value::Str(s)) => {
+            // Check if this string needs interpolation
+            if s.contains('$') || s.contains('{') {
+                match render_template(s, env) {
+                    Ok(interpolated) => Ok(Value::Str(interpolated)),
+                    Err(e) => Err(e),
+                }
+            } else {
+                Ok(Value::Str(s.clone()))
+            }
+        }
         Expr::Literal(value) => Ok(value.clone()),
         Expr::Variable(name) => {
             env.get_value(name)
@@ -1006,6 +1018,102 @@ pub fn evaluate(expr: &Expr, env: &Env) -> Result<Value, String> {
                 }
                 "trim" if args_values.len() == 1 => {
                     builtins::trim(&args_values[0])
+                }
+
+                // NEW: List operations
+                "push" if args_values.len() == 2 => {
+                    builtins::push(&args_values[0], &args_values[1])
+                }
+                "pop" if args_values.len() == 1 => {
+                    builtins::pop(&args_values[0])
+                }
+                "contains" if args_values.len() == 2 => {
+                    builtins::contains(&args_values[0], &args_values[1])
+                }
+                "sort" if args_values.len() == 1 => {
+                    builtins::sort(&args_values[0])
+                }
+                // NEW: String operations
+                "split" if args_values.len() == 2 => {
+                    builtins::split(&args_values[0], &args_values[1])
+                }
+                "join" if args_values.len() == 2 => {
+                    builtins::join(&args_values[0], &args_values[1])
+                }
+                "replace" if args_values.len() == 3 => {
+                    builtins::replace(&args_values[0], &args_values[1], &args_values[2])
+                }
+                "substring" if args_values.len() == 3 => {
+                    builtins::substring(&args_values[0], &args_values[1], &args_values[2])
+                }
+                "starts_with" if args_values.len() == 2 => {
+                    builtins::starts_with(&args_values[0], &args_values[1])
+                }
+                "ends_with" if args_values.len() == 2 => {
+                    builtins::ends_with(&args_values[0], &args_values[1])
+                }
+                "char_at" if args_values.len() == 2 => {
+                    builtins::char_at(&args_values[0], &args_values[1])
+                }
+                "substring_index" if args_values.len() == 3 => {
+                    builtins::substring_index(&args_values[0], &args_values[1], &args_values[2])
+                }
+                "find_index" if args_values.len() == 2 => {
+                    builtins::find_index(&args_values[0], &args_values[1])
+                }
+                "replace_at" if args_values.len() == 4 => {
+                    builtins::replace_at(&args_values[0], &args_values[1], &args_values[2], &args_values[3])
+                }
+
+                "keys" if args_values.len() == 1 => {
+                    builtins::keys(&args_values[0])
+                }
+                "values" if args_values.len() == 1 => {
+                    builtins::values(&args_values[0])
+                }
+                "get" if args_values.len() == 2 => {
+                    builtins::get(&args_values[0], &args_values[1])
+                }
+                "put" if args_values.len() == 3 => {
+                    builtins::put(&args_values[0], &args_values[1], &args_values[2])
+                }
+                "has_key" if args_values.len() == 2 => {
+                    builtins::has_key(&args_values[0], &args_values[1])
+                }
+                "remove" if args_values.len() == 2 => {
+                    builtins::remove(&args_values[0], &args_values[1])
+                }
+                "merge" if args_values.len() == 2 => {
+                    builtins::merge(&args_values[0], &args_values[1])
+                }
+                "get_index" if args_values.len() == 2 => {
+                    builtins::get_index(&args_values[0], &args_values[1])
+                }
+                "put_index" if args_values.len() == 3 => {
+                    builtins::put_index(&args_values[0], &args_values[1], &args_values[2])
+                }
+                "insert" if args_values.len() == 3 => {
+                    builtins::insert(&args_values[0], &args_values[1], &args_values[2])
+                }
+                "remove_index" if args_values.len() == 2 => {
+                    builtins::remove_index(&args_values[0], &args_values[1])
+                }
+                "sort" if args_values.len() == 2 => {
+                    builtins::sort_with_direction(&args_values[0], &args_values[1])
+                }
+                
+                // Index-based string functions
+                "char_at" if args_values.len() == 2 => {
+                    builtins::char_at(&args_values[0], &args_values[1])
+                }
+                "substring_index" if args_values.len() == 3 => {
+                    builtins::substring_index(&args_values[0], &args_values[1], &args_values[2])
+                }
+                "find_index" if args_values.len() == 2 => {
+                    builtins::find_index(&args_values[0], &args_values[1])
+                }
+                "replace_at" if args_values.len() == 4 => {
+                    builtins::replace_at(&args_values[0], &args_values[1], &args_values[2], &args_values[3])
                 }
                 _ => Err(format!("Unknown function or wrong arity: {}/{}", name, args.len())),
             }
@@ -1292,6 +1400,7 @@ pub fn evaluate(expr: &Expr, env: &Env) -> Result<Value, String> {
                 
                 // Add more method implementations as needed
                 (obj_val, method) => Err(format!("Method '{}' not implemented for {}", method, obj_val.type_name())),
+                
             }
         }
     }
@@ -1304,69 +1413,69 @@ pub fn extract_variables(expr: &Expr) -> Vec<String> {
     vars.into_iter().collect()
 }
 
-    fn extract_variables_recursive(expr: &Expr, vars: &mut HashSet<String>) {
-        match expr {
-            Expr::Variable(name) => {
-                vars.insert(name.clone());
-            }
-            Expr::Add(left, right)
-            | Expr::Subtract(left, right)
-            | Expr::Multiply(left, right)
-            | Expr::Divide(left, right) => {
-                extract_variables_recursive(left, vars);
-                extract_variables_recursive(right, vars);
-            }
-            Expr::GreaterThan(left, right)
-            | Expr::GreaterThanOrEqual(left, right)
-            | Expr::LessThan(left, right)
-            | Expr::LessThanOrEqual(left, right)
-            | Expr::Equal(left, right)
-            | Expr::NotEqual(left, right)
-            | Expr::And(left, right)
-            | Expr::Or(left, right) => {
-                extract_variables_recursive(left, vars);
-                extract_variables_recursive(right, vars);
-            }
-            Expr::Not(expr) => {
-                extract_variables_recursive(expr, vars);
-            }
-            Expr::FunctionCall(_, args) => {
-                for arg in args {
-                    extract_variables_recursive(arg, vars);
-                }
-            }
-            Expr::Conditional(branches) => {
-                for branch in branches {
-                    extract_variables_recursive(&branch.value, vars);
-                    if let Some(condition) = &branch.condition {
-                        extract_variables_recursive(condition, vars);
-                    }
-                }
-            }
-            
-            Expr::List(items) => {
-                for item in items {
-                    extract_variables_recursive(item, vars);
-                }
-            }
-            Expr::Dict(map) => {
-                for value in map.values() {
-                    extract_variables_recursive(value, vars);
-                }
-            }
-            Expr::IndexAccess(container, index) => {
-                extract_variables_recursive(container, vars);
-                extract_variables_recursive(index, vars);
-            }
-            Expr::MethodCall(obj, _, args) => {
-                extract_variables_recursive(obj, vars);
-                for arg in args {
-                    extract_variables_recursive(arg, vars);
-                }
-            }
-            Expr::Literal(_) => {}
+fn extract_variables_recursive(expr: &Expr, vars: &mut HashSet<String>) {
+    match expr {
+        Expr::Variable(name) => {
+            vars.insert(name.clone());
         }
+        Expr::Add(left, right)
+        | Expr::Subtract(left, right)
+        | Expr::Multiply(left, right)
+        | Expr::Divide(left, right) => {
+            extract_variables_recursive(left, vars);
+            extract_variables_recursive(right, vars);
+        }
+        Expr::GreaterThan(left, right)
+        | Expr::GreaterThanOrEqual(left, right)
+        | Expr::LessThan(left, right)
+        | Expr::LessThanOrEqual(left, right)
+        | Expr::Equal(left, right)
+        | Expr::NotEqual(left, right)
+        | Expr::And(left, right)
+        | Expr::Or(left, right) => {
+            extract_variables_recursive(left, vars);
+            extract_variables_recursive(right, vars);
+        }
+        Expr::Not(expr) => {
+            extract_variables_recursive(expr, vars);
+        }
+        Expr::FunctionCall(_, args) => {
+            for arg in args {
+                extract_variables_recursive(arg, vars);
+            }
+        }
+        Expr::Conditional(branches) => {
+            for branch in branches {
+                extract_variables_recursive(&branch.value, vars);
+                if let Some(condition) = &branch.condition {
+                    extract_variables_recursive(condition, vars);
+                }
+            }
+        }
+        
+        Expr::List(items) => {
+            for item in items {
+                extract_variables_recursive(item, vars);
+            }
+        }
+        Expr::Dict(map) => {
+            for value in map.values() {
+                extract_variables_recursive(value, vars);
+            }
+        }
+        Expr::IndexAccess(container, index) => {
+            extract_variables_recursive(container, vars);
+            extract_variables_recursive(index, vars);
+        }
+        Expr::MethodCall(obj, _, args) => {
+            extract_variables_recursive(obj, vars);
+            for arg in args {
+                extract_variables_recursive(arg, vars);
+            }
+        }
+        Expr::Literal(_) => {} // This handles all literal types including Int, Float, Bool, etc.
     }
+}
 
 /*fn parse_index_access(expr_str: &str) -> Result<Expr, String> {
     // Find opening bracket
@@ -2132,4 +2241,49 @@ pub fn parse_variable_with_type(var_str: &str) -> Result<(String, Option<SimpleT
         // No type annotation
         Ok((var_str.to_string(), None))
     }
+}
+
+pub fn parse_propagation_suffix(input: &str) -> Result<(String, usize, usize), String> {
+    let input = input.trim();
+    
+    // Look for ~ syntax at the end
+    if let Some(tilde_pos) = input.rfind('~') {
+         
+        let (expr_part, control_part) = input.split_at(tilde_pos);
+        let control_str = control_part[1..].trim(); // Skip the '~'
+
+        
+        
+        if control_str.starts_with('+') {
+            // ~+N syntax: become immune after N propagations
+            let limit_str = &control_str[1..]; // Skip the '+'
+            if let Ok(limit) = limit_str.parse::<usize>() {
+                if limit == 0 {
+                    return Err("~+0 is not valid - use a positive number".to_string());
+                }
+                let result = (expr_part.trim().to_string(), 0, limit);
+                 
+                return Ok(result); // delay=0, limit=N
+            } else {
+                return Err(format!("Invalid number after ~+: {}", limit_str));
+            }
+        } else if control_str.starts_with('-') {
+            // ~-N syntax: delay propagation for N changes
+            let delay_str = &control_str[1..]; // Skip the '-'
+            if let Ok(delay) = delay_str.parse::<usize>() {
+                let result = (expr_part.trim().to_string(), delay, usize::MAX);
+                 
+                return Ok(result); // delay=N, limit=infinite
+            } else {
+                return Err(format!("Invalid number after ~-: {}", delay_str));
+            }
+        } else {
+            return Err(format!("Invalid propagation control syntax: {}", control_part));
+        }
+    }
+    
+    // No propagation control syntax found
+    let result = (input.to_string(), 0, usize::MAX);
+     
+    Ok(result) // No delay, no limit
 }

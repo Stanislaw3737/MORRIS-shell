@@ -12,3 +12,6 @@ pub mod history;
 pub mod change_engine;
 pub mod propagation;
 pub mod transaction;  
+pub mod library_manager;
+pub mod startup_validator;
+pub mod safety_guard;

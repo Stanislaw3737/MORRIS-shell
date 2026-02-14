@@ -126,6 +126,9 @@ impl Env {
         self.transaction_engine.record_transaction(transaction);
         Ok(applied)
     }
+    pub fn get_variable_mut(&mut self, name: &str) -> Option<&mut Variable> {
+        self.variables.get_mut(name)
+    }
     
     // In env.rs, update smelt method
     pub fn smelt(&mut self) -> Result<(), String> {
@@ -448,7 +451,7 @@ impl Env {
     
     // ==================== VARIABLE METHODS ====================
     
-    pub fn set_computed_with_type(&mut self, name: &str, value: Value, expr: &Expr, declared_type: Option<SimpleType>) {
+   pub fn set_computed_with_type(&mut self, name: &str, value: Value, expr: &Expr, declared_type: Option<SimpleType>) {
         // If we have an active transaction, record the change
         if self.has_active_transaction() {
             let old_value = self.get_value(name)
@@ -469,19 +472,19 @@ impl Env {
                     dependencies.clone()
                 );
                 
-                // Store in main environment so expressions are retrievable!
+                // CRITICAL: Actually store the variable in the environment!
                 self.variables.insert(name.to_string(), Variable::new_with_type(
                     Value::Str("<?>".to_string()),  // Placeholder during transaction
                     false,
-                    raw_expr.clone(),  // Store the raw expression string
+                    raw_expr.clone(),
                     VariableSource::Computed,
-                    declared_type  // NEW: Store declared type
+                    declared_type  // Store declared type
                 ));
                 
                 // Store the actual expression for retrieval
                 self.expressions.insert(name.to_string(), expr.clone());
                 
-                // Also track dependencies in main environment
+                // Track dependencies
                 self.dependencies.insert(name.to_string(), dependencies.clone().into_iter().collect());
                 
                 for dep in dependencies {
@@ -494,7 +497,7 @@ impl Env {
             }
         }
         
-        // Original behavior for non-transaction case
+        // Non-transaction case - make sure this actually stores the variable
         self.remove_dependencies(name);
 
         self.variables.insert(name.to_string(), Variable::new_with_type(
@@ -502,7 +505,7 @@ impl Env {
             false,
             Some(expr.to_string()),
             VariableSource::Computed,
-            declared_type  // NEW: Store declared type
+            declared_type
         ));
 
         self.expressions.insert(name.to_string(), expr.clone());
@@ -528,7 +531,7 @@ impl Env {
         }
     }
 
-    // Enhanced set_direct method to handle type information
+    // Similarly fix set_direct_with_type:
     pub fn set_direct_with_type(&mut self, name: &str, value: Value, declared_type: Option<SimpleType>) {
         // If we have an active transaction, record the change
         if self.has_active_transaction() {
@@ -552,19 +555,20 @@ impl Env {
                     dependencies  // Use the dependencies variable
                 );  
 
+                // CRITICAL: Actually store the variable!
                 self.variables.insert(name.to_string(), Variable::new_with_type(
-                    Value::Str("<?>".to_string()),  // Placeholder
+                    Value::Str("<?>".to_string()),  // Placeholder during transaction
                     false,
                     None,
                     VariableSource::Direct,
-                    declared_type  // NEW: Store declared type
+                    declared_type  // Store declared type
                 ));
                 
                 return;
             }
         }
         
-        // Original behavior
+        // Non-transaction case - make sure this actually stores the variable
         self.remove_dependencies(name);
         
         self.variables.insert(name.to_string(), Variable::new_with_type(
@@ -572,7 +576,7 @@ impl Env {
             false,
             None,
             VariableSource::Direct,
-            declared_type  // NEW: Store declared type
+            declared_type
         ));
         
         self.expressions.remove(name);
@@ -662,38 +666,6 @@ impl Env {
         self.expressions.get(name)
     }
     
-    pub fn update_value(&mut self, name: &str, value: Value) -> Result<(), String> {
-        // If in transaction, defer actual update (just update local copy)
-        if self.has_active_transaction() {
-            if let Some(var) = self.variables.get_mut(name) {
-                if var.is_constant {
-                    return Err(format!("Variable '{}' is frozen", name));
-                }
-                var.value = value.clone();
-                var.source = VariableSource::Propagated;
-                var.last_updated = Utc::now();
-                var.update_count += 1;
-                return Ok(());
-            } else {
-                return Err(format!("Variable '{}' not found", name));
-            }
-        }
-        
-        // Original behavior (outside transaction)
-        if let Some(var) = self.variables.get_mut(name) {
-            if var.is_constant {
-                return Err(format!("Variable '{}' is frozen", name));
-            }
-            var.value = value.clone();
-            var.source = VariableSource::Propagated;
-            var.last_updated = Utc::now();
-            var.update_count += 1;
-            Ok(())
-        } else {
-            Err(format!("Variable '{}' not found", name))
-        }
-    }
-    
     pub fn propagate_from_enhanced(&mut self, changed_var: &str) -> Result<Vec<String>, String> {
         if !self.use_new_engine {
             return self.propagate_from_legacy(changed_var);
@@ -702,9 +674,7 @@ impl Env {
         // Check if we're in a transaction
         if self.has_active_transaction() {
             // During transaction, just record the propagation path
-            // Actual propagation will happen on forge
             if let Ok(transaction) = self.transaction_engine.get_active_transaction_mut() {
-                // Record that this variable would trigger propagation
                 transaction.propagation_paths.push(vec![changed_var.to_string()]);
             }
             return Ok(vec![changed_var.to_string()]);
@@ -717,18 +687,24 @@ impl Env {
         
         match self.propagation_engine.set_variable(changed_var, current_value) {
             Ok(result) => {
+                let mut actually_updated = Vec::new();
+                
                 for var_name in &result.changed_variables {
-                    if let Some(new_value) = self.propagation_engine.get_value(var_name) {
-                        if let Some(var) = self.variables.get_mut(var_name) {
-                            var.value = new_value.clone();
-                            var.source = VariableSource::Propagated;
-                            var.last_updated = Utc::now();
-                            var.update_count += 1;
+                    // Check propagation control before updating
+                    if let Some(var) = self.variables.get_mut(var_name) {
+                        if var.should_propagate() {
+                            if let Some(new_value) = self.propagation_engine.get_value(var_name) {
+                                var.value = new_value.clone();
+                                var.source = VariableSource::Propagated;
+                                var.last_updated = Utc::now();
+                                var.update_count += 1;
+                                actually_updated.push(var_name.to_string());
+                            }
                         }
                     }
                 }
                 
-                Ok(result.changed_variables)
+                Ok(actually_updated)
             }
             Err(e) => {
                 eprintln!("New propagation engine failed: {:?}, falling back to legacy", e);
@@ -896,4 +872,220 @@ impl Env {
             Err(e) => Err(format!("What-if analysis failed: {:?}", e)),
         }
     }
+
+    pub fn set_computed_with_propagation(
+        &mut self, 
+        name: &str, 
+        value: Value, 
+        expr: &Expr, 
+        declared_type: Option<SimpleType>,
+        delay: usize,
+        limit: usize,
+    ) {
+        // If we have an active transaction, record the change
+        
+        if self.has_active_transaction() {
+            let old_value = self.get_value(name)
+                .cloned()
+                .unwrap_or(Value::Str("<?>".to_string()));
+            
+            // Try to record in transaction
+            if let Ok(transaction) = self.transaction_engine.get_active_transaction_mut() {
+                let raw_expr = Some(expr.to_string());  
+                let dependencies = extract_variables(expr);
+                
+                transaction.add_change_with_raw_expr(
+                    name.to_string(),
+                    old_value,
+                    Value::Str("<?>".to_string()),  // Placeholder
+                    Some(expr.clone()),
+                    raw_expr.clone(),  // Store the raw expression
+                    dependencies.clone()
+                );
+                
+                // Store in main environment with propagation controls
+                self.variables.insert(name.to_string(), Variable::new_with_propagation(
+                    Value::Str("<?>".to_string()),  // Placeholder during transaction
+                    false,
+                    raw_expr.clone(),
+                    VariableSource::Computed,
+                    declared_type,
+                    delay,    // Propagation delay
+                    limit,    // Propagation limit
+                ));
+                
+                // Store the actual expression for retrieval
+                self.expressions.insert(name.to_string(), expr.clone());
+                
+                // Also track dependencies in main environment
+                self.dependencies.insert(name.to_string(), dependencies.clone().into_iter().collect());
+                
+                for dep in dependencies {
+                    self.dependents.entry(dep)
+                        .or_insert_with(HashSet::new)
+                        .insert(name.to_string());
+                }
+                
+                return;
+            }
+        }
+        
+        // Non-transaction case - make sure this actually stores the variable
+        self.remove_dependencies(name);
+
+        self.variables.insert(name.to_string(), Variable::new_with_propagation(
+            value.clone(),
+            false,
+            Some(expr.to_string()),
+            VariableSource::Computed,
+            declared_type,
+            delay,    // Propagation delay
+            limit,    // Propagation limit
+        ));
+
+        self.expressions.insert(name.to_string(), expr.clone());
+
+        let mut deps: HashSet<String> = extract_variables(expr).into_iter().collect();
+
+        if deps.contains(name) {
+            deps.remove(name);
+        }
+
+        self.dependencies.insert(name.to_string(), deps.clone());
+
+        for dep in deps {
+            self.dependents.entry(dep)
+                .or_insert_with(HashSet::new)
+                .insert(name.to_string());
+        }
+        
+        if self.use_new_engine {
+            if let Err(e) = self.propagation_engine.register_computed_variable(name, value.clone(), expr) {
+                eprintln!("Warning: Failed to register with new propagation engine: {:?}", e);
+            }
+        }
+    }
+    
+    // Enhanced set_direct with propagation control
+    pub fn set_direct_with_propagation(
+        &mut self, 
+        name: &str, 
+        value: Value, 
+        declared_type: Option<SimpleType>,
+        delay: usize,
+        limit: usize,
+    ) {
+        // If we have an active transaction, record the change
+        if self.has_active_transaction() {
+            let old_value = self.get_value(name)
+                .cloned()
+                .unwrap_or(Value::Str("<?>".to_string()));
+            
+            // Try to record in transaction
+            if let Ok(transaction) = self.transaction_engine.get_active_transaction_mut() {
+                let dependencies = if let Some(expr) = self.expressions.get(name) {
+                    extract_variables(expr)
+                } else {
+                    Vec::new()
+                };
+                
+                transaction.add_change(  // CORRECT METHOD - 5 arguments
+                    name.to_string(),
+                    old_value,
+                    value.clone(),
+                    None,  // No expression for direct values
+                    dependencies  // Use the dependencies variable
+                );  
+
+                // Store with propagation controls
+                self.variables.insert(name.to_string(), Variable::new_with_propagation(
+                    Value::Str("<?>".to_string()),  // Placeholder during transaction
+                    false,
+                    None,
+                    VariableSource::Direct,
+                    declared_type,
+                    delay,    // Propagation delay
+                    limit,    // Propagation limit
+                ));
+                
+                return;
+            }
+        }
+        
+        // Non-transaction case
+        self.remove_dependencies(name);
+        
+        self.variables.insert(name.to_string(), Variable::new_with_propagation(
+            value.clone(),
+            false,
+            None,
+            VariableSource::Direct,
+            declared_type,
+            delay,    // Propagation delay
+            limit,    // Propagation limit
+        ));
+        
+        self.expressions.remove(name);
+        
+        if self.use_new_engine {
+            if let Err(e) = self.propagation_engine.register_direct_variable(name, value.clone(), false) {
+                eprintln!("Warning: Failed to register direct variable: {:?}", e);
+            }
+        }
+    }
+    
+    // Enhanced update_value to respect propagation control
+    pub fn update_value(&mut self, name: &str, value: Value) -> Result<(), String> {
+        // If in transaction, defer actual update (just update local copy)
+        if self.has_active_transaction() {
+            if let Some(var) = self.variables.get_mut(name) {
+                if var.is_constant {
+                    return Err(format!("Variable '{}' is frozen", name));
+                }
+                var.value = value.clone();
+                var.source = VariableSource::Propagated;
+                var.last_updated = Utc::now();
+                var.update_count += 1;
+                return Ok(());
+            } else {
+                return Err(format!("Variable '{}' not found", name));
+            }
+        }
+        
+        // Original behavior (outside transaction)
+        if let Some(var) = self.variables.get_mut(name) {
+            if var.is_constant {
+                return Err(format!("Variable '{}' is frozen", name));
+            }
+            
+            // Don't check propagation control here - it should be checked by the propagation logic
+            // The propagation logic has already determined that this update should happen
+            var.value = value.clone();
+            var.source = VariableSource::Propagated;
+            var.last_updated = Utc::now();
+            var.update_count += 1;
+            Ok(())
+        } else {
+            Err(format!("Variable '{}' not found", name))
+        }
+    }
+
+    pub fn update_value_without_propagation_check(&mut self, name: &str, value: Value) -> Result<(), String> {
+        if let Some(var) = self.variables.get_mut(name) {
+            if var.is_constant {
+                return Err(format!("Variable '{}' is frozen", name));
+            }
+            
+            // Update without propagation check (for use by propagation logic)
+            var.value = value.clone();
+            var.source = VariableSource::Propagated;
+            var.last_updated = Utc::now();
+            var.update_count += 1;
+            Ok(())
+        } else {
+            Err(format!("Variable '{}' not found", name))
+        }
+    }
+
 }
+

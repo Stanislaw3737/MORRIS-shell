@@ -1,0 +1,13 @@
+set study = true
+
+set score = 84 when study |
+74 when not study |
+64;
+
+set grade = "A" when score >= 90 and score < 100 |
+"B" when score >= 80 and score < 90 |
+"C" when score >= 70 and score < 80 |
+"D' when score >= 60 and score < 70 |
+"E";
+
+

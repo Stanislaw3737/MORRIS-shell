@@ -18,7 +18,8 @@ use crate::core::history::HistoryManager;
 use crate::core::change_engine::ChangeEngineManager;
 use rustyline::error::ReadlineError;  
 use ctrlc;  
-use crate::core::types::SimpleType;    
+use crate::core::types::SimpleType;
+use crate::core::template::render_template;    
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -66,26 +67,107 @@ fn interactive_mode() -> io::Result<()> {
         }
     };
     
-    // Show the new logo
+    // PHASE 0: RUN STARTUP VALIDATION BEFORE ANYTHING ELSE
+    repl.printer().header("🧪 Morris Startup Validation");
+    
+    let mut validator = match crate::core::startup_validator::StartupValidator::new() {
+        Ok(validator) => validator,
+        Err(e) => {
+            repl.printer().error(&format!("Validation system failed: {}", e));
+            repl.printer().warning("System cannot start safely. Use fallback mode.");
+            return interactive_mode_fallback();
+        }
+    };
+    
+    match validator.validate_startup() {
+        Ok(report) => {
+            if report.has_critical_issues() {
+                repl.printer().error("CRITICAL VALIDATION FAILURES DETECTED");
+                println!("{}", report.format_summary());
+                repl.printer().warning("System cannot start safely. Use fallback mode.");
+                return interactive_mode_fallback();
+            }
+            
+            repl.printer().success("Startup validation passed");
+            if !report.warnings.is_empty() {
+                repl.printer().warning(&format!("{} warnings found", report.warnings.len()));
+                println!("{}", report.format_summary());
+            }
+        }
+        Err(e) => {
+            repl.printer().error(&format!("Validation failed: {}", e));
+            return interactive_mode_fallback();
+        }
+    }
+
+    // Load validated library state using the validator's library_manager field
+    let library_state = match validator.library_manager.load_validated_library() {
+        Ok(state) => state,
+        Err(e) => {
+            repl.printer().error(&format!("Failed to load library: {}", e));
+            return interactive_mode_fallback();
+        }
+    };
+
+    let mut loaded_intents = match validator.library_manager().load_intent_files() {
+        Ok(intents) => {
+            repl.printer().success(&format!("Loaded {} intent definitions", intents.len()));
+            intents
+        }
+        Err(e) => {
+            repl.printer().warning(&format!("Could not load intent files: {}", e));
+            HashMap::new()
+        }
+    };
+    
+    // Merge with user-defined intents
+    let mut all_intents = loaded_intents;
+    //all_intents.extend(defined_intents);
+    
+    // Show the new logo (only after validation passes)
     show_morris_logo(repl.printer());
     
     println!("Type 'help' for available commands.");
     println!("Type 'exit' to quit.");
     println!();  // Add blank line
     
-    // Initialize state
+    // Initialize state with validated library
     let mut env = Env::new();
     let filesystem = FileSystem::new();
+    
+    // Load validated library (now that we know it's safe)
+    let library_state = match validator.library_manager().load_validated_library() {
+        Ok(state) => state,
+        Err(e) => {
+            repl.printer().error(&format!("Failed to load library: {}", e));
+            return interactive_mode_fallback();
+        }
+    };
+    
     let mut library = Library::new();
     let mut intent_history: Vec<crate::core::intent::Intent> = Vec::new();
-    let mut defined_intents: HashMap<String, crate::core::intent::Intent> = HashMap::new();
+    
+    // NEW: Load validated intents from library state
+    let mut defined_intents: HashMap<String, crate::core::intent::Intent> = 
+        library_state.user_intents.clone();
     
     let mut history_manager = HistoryManager::new();
     let mut engine_manager = ChangeEngineManager::new();
     
-    // Load existing data
-    history_manager.load().ok();
-    engine_manager.load().ok();
+    // Load existing data (now that we know it's safe)
+    match history_manager.load() {
+        Ok(_) => repl.printer().info("History loaded"),
+        Err(e) => repl.printer().warning(&format!("Could not load history: {}", e)),
+    }
+    
+    match engine_manager.load() {
+        Ok(_) => repl.printer().info("Change engine loaded"),
+        Err(e) => repl.printer().warning(&format!("Could not load change engine: {}", e)),
+    }
+    
+    // NEW: Create safety guard for all operations
+    let safety_guard = crate::core::safety_guard::SafetyGuard::new()
+        .expect("Failed to initialize safety guard");
     
     // Main loop
     loop {
@@ -113,6 +195,7 @@ fn interactive_mode() -> io::Result<()> {
                 } else {
                     input = line;
                 }
+                
                 // Process the input
                 match input.as_str() {
                     "exit" | "quit" => {
@@ -155,14 +238,12 @@ fn interactive_mode() -> io::Result<()> {
                         println!();
                         continue;
                     }
-
                     "engine off" => {
                         env.disable_new_engine();
                         repl.printer().success("New propagation engine disabled (using legacy)");
                         println!();
                         continue;
                     }
-
                     "engine migrate" => {
                         match env.migrate_to_new_engine() {
                             Ok(_) => {
@@ -176,14 +257,12 @@ fn interactive_mode() -> io::Result<()> {
                         }
                         continue;
                     }
-
                     "engine visualize" => {
                         let visualization = env.visualize_dependencies();
                         println!("{}", visualization);
                         println!();
                         continue;
                     }
-
                     "engine history" => {
                         let history = env.get_propagation_history(10);
                         if history.is_empty() {
@@ -197,7 +276,6 @@ fn interactive_mode() -> io::Result<()> {
                         println!();
                         continue;
                     }
-
                     "engine status" => {
                         if env.is_new_engine_enabled() {
                             repl.printer().success("✓ New propagation engine is ENABLED");
@@ -209,10 +287,48 @@ fn interactive_mode() -> io::Result<()> {
                         println!();
                         continue;
                     }
+                    // NEW: Integrity system commands
+                    "validate" => {
+                        match validator.validate_current_state(&env, &defined_intents) {
+                            Ok(report) => {
+                                repl.printer().success("System validation passed");
+                                println!("{}", report.format_summary());
+                            }
+                            Err(e) => {
+                                repl.printer().error(&format!("Validation failed: {}", e));
+                            }
+                        }
+                        println!();
+                        continue;
+                    }
+                    "integrity check" => {
+                        match validator.check_system_integrity() {
+                            Ok(report) => {
+                                if report.is_clean() {
+                                    repl.printer().success("System integrity verified");
+                                } else {
+                                    repl.printer().warning("Integrity issues found");
+                                    println!("{}", report.format_summary());
+                                }
+                            }
+                            Err(e) => {
+                                repl.printer().error(&format!("Integrity check failed: {}", e));
+                            }
+                        }
+                        println!();
+                        continue;
+                    }
                     _ => {
-                        // Parse and execute the intent
+                        // Parse and execute the intent WITH SAFETY GUARD
                         match parse_to_intent(&input) {
                             Ok(mut intent) => {
+                                // NEW: Validate intent safety before execution
+                                if let Err(e) = safety_guard.validate_intent(&intent) {
+                                    repl.printer().error(&format!("Safety check failed: {}", e));
+                                    println!();
+                                    continue;
+                                }
+                                
                                 // Handle system commands that were parsed as intents
                                 if intent.state == IntentState::NeedsClarification {
                                     if let Some(cmd) = intent.get_context("system_command") {
@@ -243,6 +359,13 @@ fn interactive_mode() -> io::Result<()> {
                                 // Check if it's a define intent
                                 if intent.is_composition && intent.intent_source == Some("defined_intent".to_string()) {
                                     if let Some(name) = &intent.composition_name {
+                                        // NEW: Validate the new intent definition
+                                        if let Err(e) = safety_guard.validate_new_definition(&intent) {
+                                            repl.printer().error(&format!("Cannot define intent: {}", e));
+                                            println!();
+                                            continue;
+                                        }
+                                        
                                         defined_intents.insert(name.clone(), intent.clone());
                                         repl.printer().success(&format!("Intent defined: {}", name));
                                         println!();
@@ -260,8 +383,15 @@ fn interactive_mode() -> io::Result<()> {
                                             let params = intent.parameters.clone();
                                             let instantiated = defined_intent.instantiate_with_params(&params);
                                             
+                                            // NEW: Validate instantiated intent
+                                            if let Err(e) = safety_guard.validate_intent(&instantiated) {
+                                                repl.printer().error(&format!("Cannot execute intent: {}", e));
+                                                println!();
+                                                continue;
+                                            }
+                                            
                                             // Execute the instantiated intent
-                                            match execute_intent(
+                                            match execute_intent_with_guard(
                                                 &instantiated, 
                                                 &mut env, 
                                                 &filesystem, 
@@ -269,6 +399,7 @@ fn interactive_mode() -> io::Result<()> {
                                                 &mut intent_history, 
                                                 &mut history_manager, 
                                                 &mut engine_manager, 
+                                                &safety_guard,
                                                 repl.printer()
                                             ) {
                                                 Ok(output) => {
@@ -297,7 +428,7 @@ fn interactive_mode() -> io::Result<()> {
                                     Ok(true) => {
                                         intent.state = IntentState::Executing;
                                         
-                                        match execute_intent(
+                                        match execute_intent_with_guard(
                                             &intent, 
                                             &mut env, 
                                             &filesystem, 
@@ -305,6 +436,7 @@ fn interactive_mode() -> io::Result<()> {
                                             &mut intent_history, 
                                             &mut history_manager, 
                                             &mut engine_manager, 
+                                            &safety_guard,
                                             repl.printer()
                                         ) {
                                             Ok(output) => {
@@ -415,6 +547,26 @@ fn interactive_mode() -> io::Result<()> {
     repl.printer().success("Knowledge Preserved...");
     Ok(())
 }
+
+// NEW: Enhanced execute_intent function with safety guard
+fn execute_intent_with_guard(
+    intent: &crate::core::intent::Intent,
+    env: &mut Env,
+    filesystem: &FileSystem,
+    library: &mut Library,
+    intent_history_vec: &mut Vec<crate::core::intent::Intent>,
+    history_manager: &mut HistoryManager,
+    engine_manager: &mut ChangeEngineManager,
+    safety_guard: &crate::core::safety_guard::SafetyGuard,
+    printer: &Printer,
+) -> Result<String, String> {
+    // Validate execution with safety guard
+    safety_guard.validate_execution(intent, env)?;
+    
+    // Then proceed with normal execution
+    execute_intent(intent, env, filesystem, library, intent_history_vec, history_manager, engine_manager, printer)
+}
+
 fn setup_ctrlc_handler() {
     ctrlc::set_handler(|| {
         // This just allows Ctrl+C to work; rustyline handles it in read_line
@@ -816,18 +968,29 @@ fn show_history_clean(intent_history: &[crate::core::intent::Intent], printer: &
     }
 }
 
-fn execute_intent(
+fn execute_intent_in_test_env(
     intent: &crate::core::intent::Intent,
     env: &mut Env,
     filesystem: &FileSystem,
     library: &mut Library,
-    intent_history_vec: &mut Vec<crate::core::intent::Intent>,
-    history_manager: &mut HistoryManager,      // Add this
+    history: &mut Vec<crate::core::intent::Intent>,
+    history_manager: &mut HistoryManager,
     engine_manager: &mut ChangeEngineManager,
     printer: &Printer,
 ) -> Result<String, String> {
+    // This is a direct copy of the logic that would normally be in execute_intent
+    // but without the recursive super::execute_intent call
     match &intent.verb {
-        // File commands
+        Verb::Set => execute_set_intent_clean(intent, env, printer),
+        Verb::Ensure => execute_ensure_intent_clean(intent, env, printer),
+        Verb::Writeout => execute_writeout_intent_clean(intent, env, printer),
+        Verb::Derive => execute_derive_intent_clean(intent, env, printer),
+        Verb::Analyze => execute_analyze_intent_clean(intent, env, printer),
+        Verb::Find => execute_find_intent_clean(intent, env, printer),
+        Verb::Execute => execute_execute_intent_clean(intent, env, printer),
+        Verb::Freeze => execute_freeze_intent_clean(intent, env, printer),
+        
+        // File operations
         Verb::Save => execute_save_intent_clean(intent, env, filesystem, printer),
         Verb::Read => execute_read_intent_clean(intent, env, filesystem, printer),
         Verb::Write => execute_write_intent_clean(intent, env, filesystem, printer),
@@ -836,6 +999,9 @@ fn execute_intent(
         Verb::List => execute_list_intent_clean(intent, filesystem, printer),
         Verb::Info => execute_info_intent_clean(intent, filesystem, printer),
         Verb::Exists => execute_exists_intent_clean(intent, filesystem, printer),
+        Verb::Load => execute_load_intent_clean(intent, env, history, history_manager, engine_manager, library, printer),
+        
+        // Book navigation
         Verb::Page => execute_page_intent(library, printer),
         Verb::Turn => execute_turn_intent(intent, library, printer),
         Verb::Bookmark => execute_bookmark_intent(intent, library, printer),
@@ -855,24 +1021,14 @@ fn execute_intent(
         Verb::Jump => execute_jump_intent(intent, library, printer),
         Verb::Peek => execute_peek_intent(intent, library, printer),
         Verb::Return => execute_return_intent(intent, library, printer),
-        Verb::Goto => execute_jump_intent(intent, library, printer),
         Verb::Mark => execute_mark_intent(intent, library, printer),
-
-        Verb::Set => execute_set_intent_clean(intent, env, printer),
-        Verb::Ensure => execute_ensure_intent_clean(intent, env, printer),
-        Verb::Writeout => execute_writeout_intent_clean(intent, env, printer),
-        Verb::Derive => execute_derive_intent_clean(intent, env, printer),
-        Verb::Analyze => execute_analyze_intent_clean(intent, env, printer),
-        Verb::Find => execute_find_intent_clean(intent, env, printer),
-        Verb::Execute => execute_execute_intent_clean(intent, env, printer),
-        Verb::Freeze => execute_freeze_intent_clean(intent, env, printer),
-        Verb::Load => execute_load_intent_clean(intent, env, intent_history_vec, history_manager, engine_manager, library, printer),    
-
+        Verb::Goto => execute_jump_intent(intent, library, printer),
+        
         // History operations
         Verb::History => execute_history_intent(intent, history_manager, printer),
         Verb::HistorySearch => execute_history_search_intent(intent, history_manager, printer),
         Verb::HistoryTag => execute_history_tag_intent(intent, history_manager, printer),
-        Verb::HistoryReplay => execute_history_replay_intent(intent, history_manager, env, filesystem, library, intent_history_vec, engine_manager, printer),
+        Verb::HistoryReplay => execute_history_replay_intent(intent, history_manager, env, filesystem, library, history, engine_manager, printer),
         Verb::HistoryClear => execute_history_clear_intent(history_manager, printer),
         Verb::HistorySave => execute_history_save_intent(history_manager, printer),
         
@@ -884,7 +1040,8 @@ fn execute_intent(
         Verb::EngineDefine => execute_engine_define_intent(intent, engine_manager, printer),
         Verb::EngineRule => execute_engine_rule_intent(intent, engine_manager, printer),
         Verb::EngineHook => execute_engine_hook_intent(intent, engine_manager, printer),
-
+        
+        // Transaction operations
         Verb::Craft => execute_craft_intent(intent, env, printer),
         Verb::Forge => execute_forge_intent(env, printer),
         Verb::Smelt => execute_smelt_intent(env, printer),
@@ -898,22 +1055,105 @@ fn execute_intent(
         Verb::Gild => execute_gild_intent(intent, env, printer),
         Verb::Patina => execute_patina_intent(intent, env, printer),
         Verb::Transaction => execute_transaction_intent(env, printer),
-
+        
         Verb::WhatIf => execute_what_if_intent(intent, env, printer),
-
-        Verb::Collection => execute_collection_intent(intent, env, printer),
-        Verb::Dictionary => execute_dictionary_intent(intent, env, printer),
+        
+        // JSON operations
         Verb::ParseJson => execute_parse_json_intent(intent, env, printer),
         Verb::ToJson => execute_to_json_intent(intent, env, printer),
         Verb::FromJson => execute_from_json_intent(intent, env, printer),
-        //Verb::Assign => execute_assign_intent(intent, env, printer),
-        //Verb::Json => execute_json_intent(intent, env, printer),
         Verb::JsonGet => execute_json_get_intent(intent, env, printer),
         Verb::JsonSet => execute_json_set_intent(intent, env, printer),
-            
+        
+        // Collection operations
+        Verb::Collection => execute_collection_intent(intent, env, printer),
+        Verb::Dictionary => execute_dictionary_intent(intent, env, printer),
+        
+        // Phase 2: Enhanced Introspection
+        Verb::Examine => {
+            match crate::core::startup_validator::StartupValidator::new() {
+                Ok(validator) => {
+                    execute_examine_intent(
+                        intent, 
+                        env,
+                        library,
+                        &HashMap::new(), // You'll need actual defined_intents
+                        &validator,
+                        printer
+                    )
+                }
+                Err(e) => Err(format!("Validator error: {}", e))
+            }
+        },
+        
+        Verb::Construct => {
+            let mut defined_intents_copy = HashMap::new(); // Replace with actual reference
+            execute_construct_intent(intent, &mut defined_intents_copy, printer)
+        },
+        
+        Verb::Evolve => {
+            let mut defined_intents_copy = HashMap::new(); // Replace with actual reference
+            execute_evolve_intent(intent, &mut defined_intents_copy, printer)
+        },
+        
+        Verb::Grow => {
+            let mut defined_intents_copy = HashMap::new(); // Replace with actual reference
+            execute_grow_intent(intent, &mut defined_intents_copy, printer)
+        },
+        
+        // Phase 3: Reflection Programming
+        Verb::Reflect => {
+            match crate::core::startup_validator::StartupValidator::new() {
+                Ok(validator) => {
+                    execute_reflect_intent(
+                        intent,
+                        env,
+                        &HashMap::new(), // You'll need actual defined_intents
+                        &validator,
+                        printer
+                    )
+                }
+                Err(e) => Err(format!("Validator error: {}", e))
+            }
+        },
+        
+        Verb::Test => {
+            execute_test_intent(
+                intent,
+                env,
+                &HashMap::new(), // You'll need actual defined_intents  
+                printer
+            )
+        },
+        
+        Verb::Adopt => {
+            let mut defined_intents_copy = HashMap::new(); // Replace with actual reference
+            execute_adopt_intent(intent, &mut defined_intents_copy, printer)
+        },
     }
 }
 
+pub fn execute_intent(
+    intent: &crate::core::intent::Intent,
+    env: &mut Env,
+    filesystem: &FileSystem,
+    library: &mut Library,
+    intent_history_vec: &mut Vec<crate::core::intent::Intent>,
+    history_manager: &mut HistoryManager,
+    engine_manager: &mut ChangeEngineManager,
+    printer: &Printer,
+) -> Result<String, String> {
+    execute_intent_in_test_env(
+        intent,
+        env,
+        filesystem,
+        library,
+        intent_history_vec,
+        history_manager,
+        engine_manager,
+        printer
+    )
+}
 
 fn execute_set_intent_clean(
     intent: &crate::core::intent::Intent, 
@@ -923,14 +1163,24 @@ fn execute_set_intent_clean(
     if let Some(Target::Variable(var_name)) = &intent.target {
         let value_str = intent.parameters.get("value")
             .ok_or("No value specified in set intent")?;
+        // Get propagation parameters from intent (already parsed during intent parsing)
+        let propagation_delay = intent.parameters.get("propagation_delay")
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0);
+        let propagation_limit = intent.parameters.get("propagation_limit")
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(usize::MAX);
+        
+        
+        
         let declared_type = intent.parameters.get("declared_type")
             .and_then(|type_str| parse_simple_type(type_str));
         
-        // Remove the early return that was preventing actual execution!
-        // The type display should come AFTER setting the variable, not before
+        // Since value_str is already cleaned by intent parser, use it directly
+        let clean_value_str = value_str;
         
         // SPECIAL HANDLING FOR MULTI-LINE JSON OBJECTS
-        let trimmed_value = value_str.trim();
+        let trimmed_value = clean_value_str.trim();
         if trimmed_value.starts_with('{') && trimmed_value.contains('\n') {
             // This looks like multi-line JSON, clean it up
             match parse_multiline_json_properly(trimmed_value) {
@@ -939,32 +1189,46 @@ fn execute_set_intent_clean(
                         Ok(parsed_value) => {
                             if env.has_active_transaction() {
                                 let placeholder = Value::Str("<?>".to_string());
-                                env.set_computed_with_type(var_name, placeholder, &expr, declared_type.clone());
+                                env.set_computed_with_propagation(var_name, placeholder, &expr, declared_type.clone(), propagation_delay, propagation_limit);
                                 let type_info = if let Some(ref t) = declared_type {
                                     format!(":{}", t.name())
                                 } else {
                                     "".to_string()
                                 };
-                                return Ok(format!("[🛠] Crafted: {}{} = {}", var_name, type_info, parsed_value.display()));
+                                let mut result = format!("[🛠] Crafted: {}{} = {}", var_name, type_info, parsed_value.display());
+                                if propagation_delay > 0 {
+                                    result.push_str(&format!(" (~-{})", propagation_delay));
+                                }
+                                if propagation_limit != usize::MAX {
+                                    result.push_str(&format!(" (~+{})", propagation_limit));
+                                }
+                                return Ok(result);
                             } else {
-                                env.set_computed_with_type(var_name, parsed_value.clone(), &expr, declared_type.clone());
+                                env.set_computed_with_propagation(var_name, parsed_value.clone(), &expr, declared_type.clone(), propagation_delay, propagation_limit);
                                 let type_info = if let Some(ref t) = declared_type {
                                     format!(":{}", t.name())
                                 } else {
                                     "".to_string()
                                 };
-                                return Ok(format!("[+] {}{} = {} (computed)", var_name, type_info, parsed_value.display()));
+                                let mut result = format!("[+] {}{} = {} (computed)", var_name, type_info, parsed_value.display());
+                                if propagation_delay > 0 {
+                                    result.push_str(&format!(" (~-{})", propagation_delay));
+                                }
+                                if propagation_limit != usize::MAX {
+                                    result.push_str(&format!(" (~+{})", propagation_limit));
+                                }
+                                return Ok(result);
                             }
                         }
                         Err(e) => {
                             // Fall through to normal processing
-                            eprintln!("DEBUG: Multi-line JSON evaluation failed: {}", e);
+                            
                         }
                     }
                 }
                 Err(e) => {
                     // Fall through to normal processing
-                    eprintln!("DEBUG: Multi-line JSON parsing failed: {}", e);
+                    
                 }
             }
         }
@@ -977,15 +1241,22 @@ fn execute_set_intent_clean(
                             // Handle transaction case
                             if env.has_active_transaction() {
                                 let placeholder = Value::Str("<?>".to_string());
-                                env.set_computed_with_type(var_name, placeholder, &expr, declared_type.clone());
+                                env.set_computed_with_propagation(var_name, placeholder, &expr, declared_type.clone(), propagation_delay, propagation_limit);
                                 let type_info = if let Some(ref t) = declared_type {
                                     format!(":{}", t.name())
                                 } else {
                                     "".to_string()
                                 };
-                                return Ok(format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value.display()));
+                                let mut result = format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value.display());
+                                if propagation_delay > 0 {
+                                    result.push_str(&format!(" (~-{})", propagation_delay));
+                                }
+                                if propagation_limit != usize::MAX {
+                                    result.push_str(&format!(" (~+{})", propagation_limit));
+                                }
+                                return Ok(result);
                             } else {
-                                env.set_computed_with_type(var_name, value.clone(), &expr, declared_type.clone());
+                                env.set_computed_with_propagation(var_name, value.clone(), &expr, declared_type.clone(), propagation_delay, propagation_limit);
                                 
                                 let propagated = crate::core::propagate::propagate_from(env, var_name)
                                     .unwrap_or_default();
@@ -997,6 +1268,12 @@ fn execute_set_intent_clean(
                                 };
                                 let mut output = String::new();
                                 output.push_str(&format!("[+] {}{} = {} (computed)", var_name, type_info, value.display()));
+                                if propagation_delay > 0 {
+                                    output.push_str(&format!(" (~-{})", propagation_delay));
+                                }
+                                if propagation_limit != usize::MAX {
+                                    output.push_str(&format!(" (~+{})", propagation_limit));
+                                }
                                 output.push_str(&format!("\n  Expression: {}", expr));
                                 
                                 if !propagated.is_empty() {
@@ -1020,80 +1297,122 @@ fn execute_set_intent_clean(
         // CHECK IF IN TRANSACTION FIRST
         if env.has_active_transaction() {
              // Check if it's a simple number or string
-            let trimmed = value_str.trim();
+            let trimmed = clean_value_str.trim();
             
             // Check for simple numeric value
             if let Ok(num) = trimmed.parse::<i64>() {
                 let value = Value::Int(num);
-                env.set_direct_with_type(var_name, value.clone(), declared_type.clone());
+                env.set_direct_with_propagation(var_name, value.clone(), declared_type.clone(), propagation_delay, propagation_limit);
                 let type_info = if let Some(ref t) = declared_type {
                     format!(":{}", t.name())
                 } else {
                     "".to_string()
                 };
-                return Ok(format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value.display()));
+                let mut result = format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value.display());
+                if propagation_delay > 0 {
+                    result.push_str(&format!(" (~-{})", propagation_delay));
+                }
+                if propagation_limit != usize::MAX {
+                    result.push_str(&format!(" (~+{})", propagation_limit));
+                }
+                return Ok(result);
             }
             
             // Check for simple boolean
             if trimmed == "true" || trimmed == "false" {
                 let value = Value::Bool(trimmed == "true");
-                env.set_direct_with_type(var_name, value.clone(), declared_type.clone());
+                env.set_direct_with_propagation(var_name, value.clone(), declared_type.clone(), propagation_delay, propagation_limit);
                 let type_info = if let Some(ref t) = declared_type {
                     format!(":{}", t.name())
                 } else {
                     "".to_string()
                 };
-                return Ok(format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value.display()));
+                let mut result = format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value.display());
+                if propagation_delay > 0 {
+                    result.push_str(&format!(" (~-{})", propagation_delay));
+                }
+                if propagation_limit != usize::MAX {
+                    result.push_str(&format!(" (~+{})", propagation_limit));
+                }
+                return Ok(result);
             }
             
             // Check for quoted string
             if trimmed.starts_with('"') && trimmed.ends_with('"') {
                 let inner = &trimmed[1..trimmed.len()-1];
                 let value = Value::Str(inner.to_string());
-                env.set_direct_with_type(var_name, value.clone(), declared_type.clone());
+                env.set_direct_with_propagation(var_name, value.clone(), declared_type.clone(), propagation_delay, propagation_limit);
                 let type_info = if let Some(ref t) = declared_type {
                     format!(":{}", t.name())
                 } else {
                     "".to_string()
                 };
-                return Ok(format!("[🛠] Crafted: {}{} = \"{}\"", var_name, type_info, inner));
+                let mut result = format!("[🛠] Crafted: {}{} = \"{}\"", var_name, type_info, inner);
+                if propagation_delay > 0 {
+                    result.push_str(&format!(" (~-{})", propagation_delay));
+                }
+                if propagation_limit != usize::MAX {
+                    result.push_str(&format!(" (~+{})", propagation_limit));
+                }
+                return Ok(result);
             }
             
             // Parse expression but don't evaluate yet
-            match crate::core::expr::parse_expression(value_str) {
+            match crate::core::expr::parse_expression(&clean_value_str) {
                 Ok(expr) => {
                     // During transaction, we store the expression unevaluated
                     let placeholder = Value::Str("<?>".to_string());
-                    env.set_computed_with_type(var_name, placeholder, &expr, declared_type.clone());
+                    env.set_computed_with_propagation(var_name, placeholder, &expr, declared_type.clone(), propagation_delay, propagation_limit);
                     let type_info = if let Some(ref t) = declared_type {
                         format!(":{}", t.name())
                     } else {
                         "".to_string()
                     };
-                    return Ok(format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value_str));
+                    let mut result = format!("[🛠] Crafted: {}{} = {}", var_name, type_info, clean_value_str);
+                    if propagation_delay > 0 {
+                        result.push_str(&format!(" (~-{})", propagation_delay));
+                    }
+                    if propagation_limit != usize::MAX {
+                        result.push_str(&format!(" (~+{})", propagation_limit));
+                    }
+                    return Ok(result);
                 }
                 Err(_) => {
-                    match parse_simple_value(value_str, intent.parameters.get("type").map(|s: &String| s.as_str())) {
+                    match parse_simple_value(&clean_value_str, intent.parameters.get("type").map(|s: &String| s.as_str())) {
                         Ok(value) => {
-                            env.set_direct_with_type(var_name, value.clone(), declared_type.clone());
+                            env.set_direct_with_propagation(var_name, value.clone(), declared_type.clone(), propagation_delay, propagation_limit);
                             let type_info = if let Some(ref t) = declared_type {
                                 format!(":{}", t.name())
                             } else {
                                 "".to_string()
                             };
-                            return Ok(format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value.display()));
+                            let mut result = format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value.display());
+                            if propagation_delay > 0 {
+                                result.push_str(&format!(" (~-{})", propagation_delay));
+                            }
+                            if propagation_limit != usize::MAX {
+                                result.push_str(&format!(" (~+{})", propagation_limit));
+                            }
+                            return Ok(result);
                         }
                         Err(_) => {
                             // Treat as string literal
-                            let expr = crate::core::expr::Expr::Literal(Value::Str(value_str.to_string()));
+                            let expr = crate::core::expr::Expr::Literal(Value::Str(clean_value_str.to_string()));
                             let placeholder = Value::Str("<?>".to_string());
-                            env.set_computed_with_type(var_name, placeholder, &expr, declared_type.clone());
+                            env.set_computed_with_propagation(var_name, placeholder, &expr, declared_type.clone(), propagation_delay, propagation_limit);
                             let type_info = if let Some(ref t) = declared_type {
                                 format!(":{}", t.name())
                             } else {
                                 "".to_string()
                             };
-                            return Ok(format!("[🛠] Crafted: {}{} = {}", var_name, type_info, value_str));
+                            let mut result = format!("[🛠] Crafted: {}{} = {}", var_name, type_info, clean_value_str);
+                            if propagation_delay > 0 {
+                                result.push_str(&format!(" (~-{})", propagation_delay));
+                            }
+                            if propagation_limit != usize::MAX {
+                                result.push_str(&format!(" (~+{})", propagation_limit));
+                            }
+                            return Ok(result);
                         }
                     }
                 }
@@ -1102,11 +1421,11 @@ fn execute_set_intent_clean(
         
         // Original non-transaction code continues here...
         // Check if it contains interpolation
-        if value_str.contains('{') && value_str.contains('}') {
-            match parse_interpolated_string(value_str, env) {
+        if clean_value_str.contains('{') && clean_value_str.contains('}') {
+            match parse_interpolated_string(&clean_value_str, env) {
                 Ok(interpolated) => {
                     let value = Value::Str(interpolated.clone());
-                    env.set_direct_with_type(var_name, value.clone(), declared_type.clone());
+                    env.set_direct_with_propagation(var_name, value.clone(), declared_type.clone(), propagation_delay, propagation_limit);
                     
                     let propagated = crate::core::propagate::propagate_from(env, var_name)
                         .unwrap_or_default();
@@ -1118,6 +1437,12 @@ fn execute_set_intent_clean(
                     };
                     let mut output = String::new();
                     output.push_str(&format!("[+] {}{} = {}", var_name, type_info, interpolated));
+                    if propagation_delay > 0 {
+                        output.push_str(&format!(" (~-{})", propagation_delay));
+                    }
+                    if propagation_limit != usize::MAX {
+                        output.push_str(&format!(" (~+{})", propagation_limit));
+                    }
                     
                     if !propagated.is_empty() {
                         output.push_str(&format!("\n  → Updated: {}", propagated.join(", ")));
@@ -1132,12 +1457,13 @@ fn execute_set_intent_clean(
         }
 
         // Check for conditional expression
-        if looks_like_conditional(value_str) {
-            match parse_conditional_expression(value_str) {
+        if looks_like_conditional(&clean_value_str) {
+            match parse_conditional_expression(&clean_value_str) {
                 Ok(expr) => {
                     match crate::core::expr::evaluate(&expr, env) {
                         Ok(value) => {
-                            env.set_computed_with_type(var_name, value.clone(), &expr, declared_type.clone());
+                            // Make sure propagation parameters are passed here
+                            env.set_computed_with_propagation(var_name, value.clone(), &expr, declared_type.clone(), propagation_delay, propagation_limit);
                             
                             let type_info = if let Some(ref t) = declared_type {
                                 format!(":{}", t.name())
@@ -1146,14 +1472,20 @@ fn execute_set_intent_clean(
                             };
                             let mut output = String::new();
                             output.push_str(&format!("[+] {}{} = {} (conditional)", var_name, type_info, value.display()));
+                            if propagation_delay > 0 {
+                                output.push_str(&format!(" (~-{})", propagation_delay));
+                            }
+                            if propagation_limit != usize::MAX {
+                                output.push_str(&format!(" (~+{})", propagation_limit));
+                            }
                             output.push_str(&format!("\n  Expression: {}", expr));
                             
                             return Ok(output);
                         }
                         Err(e) => {
-                            // Can't evaluate yet
+                            // Can't evaluate yet - still use propagation control
                             let placeholder = Value::Str("<?>".to_string());
-                            env.set_computed_with_type(var_name, placeholder, &expr, declared_type.clone());
+                            env.set_computed_with_propagation(var_name, placeholder, &expr, declared_type.clone(), propagation_delay, propagation_limit);
                             
                             let type_info = if let Some(ref t) = declared_type {
                                 format!(":{}", t.name())
@@ -1162,6 +1494,12 @@ fn execute_set_intent_clean(
                             };
                             let mut output = String::new();
                             output.push_str(&format!("[?] {}{} = <?> (pending)", var_name, type_info));
+                            if propagation_delay > 0 {
+                                output.push_str(&format!(" (~-{})", propagation_delay));
+                            }
+                            if propagation_limit != usize::MAX {
+                                output.push_str(&format!(" (~+{})", propagation_limit));
+                            }
                             output.push_str(&format!("\n  Expression: {}", expr));
                             output.push_str(&format!("\n  Note: {}", e));
                             
@@ -1176,14 +1514,14 @@ fn execute_set_intent_clean(
         }
         
         // Try as expression
-        match crate::core::expr::parse_expression(value_str) {
+        match crate::core::expr::parse_expression(&clean_value_str) {
             Ok(expr) => {
                 match crate::core::expr::evaluate(&expr, env) {
                     Ok(value) => {
                         let type_hint = intent.parameters.get("type");
                         let final_value = apply_type_hint(value, type_hint.map(|s: &String| s.as_str()))?;
                         
-                        env.set_computed_with_type(var_name, final_value.clone(), &expr, declared_type.clone());
+                        env.set_computed_with_propagation(var_name, final_value.clone(), &expr, declared_type.clone(), propagation_delay, propagation_limit);
                         
                         let propagated = crate::core::propagate::propagate_from(env, var_name)
                             .unwrap_or_default();
@@ -1195,6 +1533,12 @@ fn execute_set_intent_clean(
                         };
                         let mut output = String::new();
                         output.push_str(&format!("[+] {}{} = {} (computed)", var_name, type_info, final_value.display()));
+                        if propagation_delay > 0 {
+                            output.push_str(&format!(" (~-{})", propagation_delay));
+                        }
+                        if propagation_limit != usize::MAX {
+                            output.push_str(&format!(" (~+{})", propagation_limit));
+                        }
                         output.push_str(&format!("\n  Expression: {}", expr));
                         
                         if !propagated.is_empty() {
@@ -1205,8 +1549,8 @@ fn execute_set_intent_clean(
                     }
                     Err(_) => {
                         // Fall back to simple value
-                        let value = parse_simple_value(value_str, intent.parameters.get("type").map(|s: &String| s.as_str()))?;
-                        env.set_direct_with_type(var_name, value.clone(), declared_type.clone());
+                        let value = parse_simple_value(&clean_value_str, intent.parameters.get("type").map(|s: &String| s.as_str()))?;
+                        env.set_direct_with_propagation(var_name, value.clone(), declared_type.clone(), propagation_delay, propagation_limit);
                         
                         let propagated = crate::core::propagate::propagate_from(env, var_name)
                             .unwrap_or_default();
@@ -1218,6 +1562,12 @@ fn execute_set_intent_clean(
                         };
                         let mut output = String::new();
                         output.push_str(&format!("[+] {}{} = {} (direct)", var_name, type_info, value.display()));
+                        if propagation_delay > 0 {
+                            output.push_str(&format!(" (~-{})", propagation_delay));
+                        }
+                        if propagation_limit != usize::MAX {
+                            output.push_str(&format!(" (~+{})", propagation_limit));
+                        }
                         
                         if !propagated.is_empty() {
                             output.push_str(&format!("\n  → Updated: {}", propagated.join(", ")));
@@ -1229,8 +1579,8 @@ fn execute_set_intent_clean(
             }
             Err(_) => {
                 // Simple value
-                let value = parse_simple_value(value_str, intent.parameters.get("type").map(|s: &String| s.as_str()))?;
-                env.set_direct_with_type(var_name, value.clone(), declared_type.clone());
+                let value = parse_simple_value(&clean_value_str, intent.parameters.get("type").map(|s: &String| s.as_str()))?;
+                env.set_direct_with_propagation(var_name, value.clone(), declared_type.clone(), propagation_delay, propagation_limit);
                 
                 let propagated = crate::core::propagate::propagate_from(env, var_name)
                     .unwrap_or_default();
@@ -1242,6 +1592,12 @@ fn execute_set_intent_clean(
                 };
                 let mut output = String::new();
                 output.push_str(&format!("[+] {}{} = {} (direct)", var_name, type_info, value.display()));
+                if propagation_delay > 0 {
+                    output.push_str(&format!(" (~-{})", propagation_delay));
+                }
+                if propagation_limit != usize::MAX {
+                    output.push_str(&format!(" (~+{})", propagation_limit));
+                }
                 
                 if !propagated.is_empty() {
                     output.push_str(&format!("\n  → Updated: {}", propagated.join(", ")));
@@ -2132,88 +2488,7 @@ fn apply_type_hint(value: crate::core::types::Value, hint: Option<&str>) -> Resu
 }
 
 fn parse_interpolated_string(input: &str, env: &Env) -> Result<String, String> {
-    let mut result = String::new();
-    let mut current = String::new();
-    let mut in_braces = false;
-    let mut brace_depth = 0;
-    let mut chars = input.chars().peekable();
-    
-    while let Some(ch) = chars.next() {
-        if ch == '\\' && !in_braces {
-            if let Some(&next) = chars.peek() {
-                match next {
-                    '{' | '}' | '\\' => {
-                        result.push(next);
-                        chars.next();
-                    }
-                    _ => {
-                        result.push('\\');
-                    }
-                }
-            } else {
-                result.push('\\');
-            }
-            continue;
-        }
-        
-        match ch {
-            '{' if !in_braces => {
-                if !current.is_empty() {
-                    result.push_str(&current);
-                    current.clear();
-                }
-                in_braces = true;
-                brace_depth = 1;
-                current.push('{');
-            }
-            '{' if in_braces => {
-                brace_depth += 1;
-                current.push(ch);
-            }
-            '}' if in_braces => {
-                current.push(ch);
-                brace_depth -= 1;
-                if brace_depth == 0 {
-                    let expr_with_braces = current.clone();
-                    let expr_str = &expr_with_braces[1..expr_with_braces.len()-1];
-                    
-                    if expr_str.trim().is_empty() {
-                        return Err("Empty interpolation {}".to_string());
-                    }
-                    
-                    match crate::core::expr::parse_expression(expr_str) {
-                        Ok(expr) => {
-                            match crate::core::expr::evaluate(&expr, env) {
-                                Ok(value) => result.push_str(&value.to_string()),
-                                Err(e) => return Err(format!("Cannot evaluate '{}': {}", expr_str, e)),
-                            }
-                        }
-                        Err(e) => return Err(format!("Invalid expression '{}': {}", expr_str, e)),
-                    }
-                    
-                    current.clear();
-                    in_braces = false;
-                }
-            }
-            _ => {
-                if in_braces {
-                    current.push(ch);
-                } else {
-                    result.push(ch);
-                }
-            }
-        }
-    }
-    
-    if in_braces {
-        return Err("Unclosed interpolation {".to_string());
-    }
-    
-    if !current.is_empty() {
-        result.push_str(&current);
-    }
-    
-    Ok(result)
+    render_template(input, env)
 }
 
 // Book metaphor execution handlers
@@ -3239,7 +3514,7 @@ fn predict_values(scenario: &HashMap<String, crate::core::types::Value>, env: &E
             // Try to get expression through variable metadata
             if let Some(var) = env.get_variable(&dependent) {
                 if let Some(ref expr_str) = var.expression {
-                    println!("Debug: Found expression string for {}: {}", dependent, expr_str);
+                    
                     // Parse and evaluate the expression
                     match crate::core::expr::parse_expression(expr_str) {
                         Ok(parsed_expr) => {
@@ -3248,19 +3523,19 @@ fn predict_values(scenario: &HashMap<String, crate::core::types::Value>, env: &E
                                     predictions.insert(dependent.clone(), predicted_value.display());
                                 }
                                 Err(e) => {
-                                    println!("Debug: Failed to evaluate {}: {}", dependent, e);
+                                    
                                 }
                             }
                         }
                         Err(e) => {
-                            println!("Debug: Failed to parse expression for {}: {}", dependent, e);
+                            
                         }
                     }
                 } else {
-                    println!("Debug: No expression string for {}", dependent);
+                    
                 }
             } else {
-                println!("Debug: Variable {} not found", dependent);
+                
             }
         }
     }
@@ -3406,26 +3681,7 @@ fn evaluate_expression_with_scenario(
     }
 }
 
-fn debug_expression_retrieval(env: &Env, var_name: &str) {
-    println!("Debug: Analyzing expression retrieval for: {}", var_name);
-    
-    if let Some(var) = env.get_variable(var_name) {
-        println!("Debug: Variable found, source: {:?}", var.source);
-        if let Some(ref expr_str) = var.expression {
-            println!("Debug: Has expression string: {}", expr_str);
-        } else {
-            println!("Debug: No expression string in variable");
-        }
-    } else {
-        println!("Debug: Variable not found");
-    }
-    
-    if let Some(expr) = env.get_expression(var_name) {
-        println!("Debug: get_expression returned: {}", expr);
-    } else {
-        println!("Debug: get_expression returned None");
-    }
-}
+
 
 fn execute_collection_intent(
     intent: &crate::core::intent::Intent,
@@ -3630,7 +3886,7 @@ fn process_script_content(
     let mut error_count = 0;
     
     let mut lines = content.lines().enumerate().peekable();
-    let mut accumulated_block = String::new();
+    let mut accumulated_statement = String::new();
     let mut in_multiline_block = false;
     let mut multiline_type = MultilineType::Generic;
     
@@ -3639,9 +3895,12 @@ fn process_script_content(
         
         // Skip empty lines and comments
         if line.is_empty() {
-            if in_multiline_block {
-                accumulated_block.push_str(original_line);
-                accumulated_block.push('\n');
+            // Only accumulate if we're in a multiline context
+            if in_multiline_block || !accumulated_statement.is_empty() {
+                if !accumulated_statement.is_empty() {
+                    accumulated_statement.push_str(original_line);
+                    accumulated_statement.push('\n');
+                }
             }
             continue;
         }
@@ -3653,34 +3912,67 @@ fn process_script_content(
         };
         
         if line_without_comment.is_empty() {
-            if in_multiline_block {
-                accumulated_block.push_str(original_line);
-                accumulated_block.push('\n');
+            if in_multiline_block || !accumulated_statement.is_empty() {
+                if !accumulated_statement.is_empty() {
+                    accumulated_statement.push_str(original_line);
+                    accumulated_statement.push('\n');
+                }
             }
             continue;
         }
         
-        // Detect multiline start
-        if !in_multiline_block {
-            if is_multiline_block_start(line_without_comment) {
+        // Check for statement termination with semicolon
+        let ends_with_semicolon = line_without_comment.ends_with(';');
+        let statement_content = if ends_with_semicolon {
+            &line_without_comment[..line_without_comment.len()-1]
+        } else {
+            line_without_comment
+        };
+        
+        // If we have accumulated content, add current line
+        if !accumulated_statement.is_empty() || (!ends_with_semicolon && !in_multiline_block) {
+            if accumulated_statement.is_empty() {
+                accumulated_statement.push_str(original_line);
+            } else {
+                accumulated_statement.push_str(&format!("\n{}", original_line));
+            }
+        }
+        
+        // If statement is terminated with semicolon, process it
+        if ends_with_semicolon && !in_multiline_block {
+            // Process the complete statement
+            match execute_script_command(&statement_content, env, history, history_manager, engine_manager, library, printer) {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    printer.error(&format!("Line {}: {}", line_num + 1, e));
+                    error_count += 1;
+                }
+            }
+            accumulated_statement.clear();
+            continue;
+        }
+        
+        // Detect multiline start (only if not already accumulating)
+        if !in_multiline_block && accumulated_statement.is_empty() {
+            if is_multiline_block_start(statement_content) {
                 in_multiline_block = true;
-                multiline_type = detect_multiline_type(line_without_comment);
-                accumulated_block.push_str(original_line);
-                accumulated_block.push('\n');
+                multiline_type = detect_multiline_type(statement_content);
+                accumulated_statement.push_str(original_line);
+                accumulated_statement.push('\n');
                 continue;
             }
         }
         
         // Handle multiline block end
         if in_multiline_block {
-            accumulated_block.push_str(original_line);
-            accumulated_block.push('\n');
+            accumulated_statement.push_str(original_line);
+            accumulated_statement.push('\n');
             
             if is_multiline_block_end(line_without_comment) || line_without_comment == ";;" {
                 in_multiline_block = false;
                 
                 // Execute the complete multi-line block
-                match execute_script_command(&accumulated_block, env, history, history_manager, engine_manager, library, printer) {
+                match execute_script_command(&accumulated_statement, env, history, history_manager, engine_manager, library, printer) {
                     Ok(_) => success_count += 1,
                     Err(e) => {
                         printer.error(&format!("Block ending line {}: {}", line_num + 1, e));
@@ -3688,7 +3980,7 @@ fn process_script_content(
                     }
                 }
                 
-                accumulated_block.clear();
+                accumulated_statement.clear();
                 continue;
             }
             
@@ -3696,8 +3988,8 @@ fn process_script_content(
             continue;
         }
         
-        // Handle system commands
-        match line_without_comment {
+        // Handle system commands (these don't need semicolons)
+        match statement_content {
             "env" => {
                 show_env_clean(env, printer);
                 success_count += 1;
@@ -3716,23 +4008,43 @@ fn process_script_content(
             _ => {}
         }
         
-        // Execute single-line commands
-        match execute_script_command(line_without_comment, env, history, history_manager, engine_manager, library, printer) {
-            Ok(_) => success_count += 1,
-            Err(e) => {
-                printer.error(&format!("Line {}: {}", line_num + 1, e));
-                error_count += 1;
+        // If we reach here and have accumulated content, it means we're in a multiline
+        // statement that hasn't been terminated with semicolon
+        if !accumulated_statement.is_empty() && !ends_with_semicolon {
+            // Continue accumulating until we get a semicolon or explicit multiline end
+            continue;
+        }
+        
+        // Execute single-line commands that don't need semicolons for backward compatibility
+        // But warn about missing semicolons eventually
+        if accumulated_statement.is_empty() {
+            match execute_script_command(statement_content, env, history, history_manager, engine_manager, library, printer) {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    printer.error(&format!("Line {}: {}", line_num + 1, e));
+                    error_count += 1;
+                }
             }
         }
     }
     
-    // Handle any remaining accumulated block
-    if !accumulated_block.is_empty() && in_multiline_block {
-        match execute_script_command(&accumulated_block, env, history, history_manager, engine_manager, library, printer) {
-            Ok(_) => success_count += 1,
-            Err(e) => {
-                printer.error(&format!("Incomplete multi-line block: {}", e));
-                error_count += 1;
+    // Handle any remaining accumulated statement (backward compatibility)
+    if !accumulated_statement.is_empty() {
+        // Strip any trailing semicolons for backward compatibility
+        let final_content = if accumulated_statement.trim_end().ends_with(';') {
+            let trimmed = accumulated_statement.trim_end();
+            &trimmed[..trimmed.len()-1]
+        } else {
+            &accumulated_statement
+        };
+        
+        if !final_content.trim().is_empty() {
+            match execute_script_command(final_content, env, history, history_manager, engine_manager, library, printer) {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    printer.error(&format!("Incomplete statement: {}", e));
+                    error_count += 1;
+                }
             }
         }
     }
@@ -3861,12 +4173,316 @@ fn parse_multiline_json_properly(input: &str) -> Result<crate::core::expr::Expr,
     crate::core::expr::parse_expression(&cleaned)
 }
 
+fn execute_examine_intent(
+    intent: &crate::core::intent::Intent,
+    env: &Env,
+    library: &Library,
+    all_intents: &HashMap<String, crate::core::intent::Intent>,
+    validator: &crate::core::startup_validator::StartupValidator,
+    printer: &Printer,
+) -> Result<String, String> {
+    if let Some(Target::Expression(target_type)) = &intent.target {
+        match target_type.as_str() {
+            "intents" => {
+                let system_intents = vec!["set", "ensure", "writeout", "derive", "find", "analyze"];
+                let mut output = String::new();
+                
+                output.push_str(&format!("[+] System Intents ({})\n", system_intents.len()));
+                for intent_name in system_intents {
+                    output.push_str(&format!("  • {}\n", intent_name));
+                }
+                
+                output.push_str(&format!("\n[+] User-Defined Intents ({})\n", all_intents.len()));
+                for (name, intent_def) in all_intents {
+                    output.push_str(&format!("  • {} ", name));
+                    if let Some(source) = &intent_def.intent_source {
+                        output.push_str(&format!("[{}]", source));
+                    }
+                    if intent_def.is_composition {
+                        output.push_str(" [composition]");
+                    }
+                    output.push('\n');
+                }
+                
+                Ok(output)
+            }
+            
+            "variables" => {
+                let variables = env.list();
+                let mut output = String::new();
+                
+                output.push_str(&format!("[+] Variables ({})\n", variables.len()));
+                
+                let mut by_type: HashMap<&str, Vec<(&String, &Value)>> = HashMap::new();
+                for (name, value) in &variables {
+                    let type_name = value.type_name();
+                    by_type.entry(type_name).or_insert(Vec::new()).push((name, value));
+                }
+                
+                for (type_name, vars) in by_type {
+                    output.push_str(&format!("\n  {} ({}):\n", type_name, vars.len()));
+                    for (name, value) in vars.iter().take(10) {
+                        let short_value = if value.to_string().len() > 30 {
+                            format!("{}...", &value.to_string()[..30])
+                        } else {
+                            value.to_string()
+                        };
+                        output.push_str(&format!("    • {} = {}\n", name, short_value));
+                    }
+                    if vars.len() > 10 {
+                        output.push_str(&format!("    ... and {} more\n", vars.len() - 10));
+                    }
+                }
+                
+                Ok(output)
+            }
+            
+            "engine" => {
+                let mut engine_manager = crate::core::change_engine::ChangeEngineManager::new();
+                match engine_manager.load() {
+                    Ok(_) => execute_engine_status_intent(&engine_manager, printer),
+                    Err(e) => Err(format!("Could not load engine: {}", e)),
+                }
+            }
+            
+            "system" => {
+                let mut output = String::new();
+                
+                output.push_str("[+] Library State\n");
+                output.push_str(&format!("  Current page: {}\n", library.page().display()));
+                output.push_str(&format!("  Bookmarks: {}\n", library.list_bookmarks().len()));
+                output.push_str(&format!("  Volumes: {}\n", library.list_volumes().len()));
+                
+                output.push_str("\n[+] Safety System\n");
+                match validator.check_system_integrity() {
+                    Ok(report) => {
+                        output.push_str(&format!("  Integrity: {}\n", 
+                            if report.is_clean() { "PASS" } else { "FAIL" }));
+                        output.push_str(&format!("  Critical issues: {}\n", report.critical_issues.len()));
+                        output.push_str(&format!("  Warnings: {}\n", report.warnings.len()));
+                    }
+                    Err(e) => output.push_str(&format!("  Integrity check failed: {}\n", e)),
+                }
+                
+                Ok(output)
+            }
+            
+            _ => Err(format!("Unknown examine target: {}", target_type)),
+        }
+    } else {
+        Err("Examine requires a target".to_string())
+    }
+}
+
+fn execute_construct_intent(
+    intent: &crate::core::intent::Intent,
+    defined_intents: &mut HashMap<String, crate::core::intent::Intent>,
+    printer: &Printer,
+) -> Result<String, String> {
+    if let Some(Target::Expression(content)) = &intent.target {
+        // Parse: "name" with (params) {expr}
+        let name = intent.parameters.get("name")
+            .ok_or("Missing intent name".to_string())?;
+        
+        // Create a basic intent definition (simplified for now)
+        let mut new_intent = crate::core::intent::Intent::new(crate::core::intent::Verb::Set)
+            .mark_as_composition(name)
+            .with_source("user_defined");
+        
+        // Store the construction template for later processing
+        new_intent = new_intent.with_target(crate::core::intent::Target::Expression(content.clone()));
+        
+        defined_intents.insert(name.clone(), new_intent);
+        
+        printer.success(&format!("Constructed intent: {}", name));
+        Ok(format!("[+] Intent '{}' defined (template: {})", name, content))
+    } else {
+        Err("Construct requires intent definition".to_string())
+    }
+}
+
+// Placeholder executions for other new verbs
+fn execute_evolve_intent(
+    _intent: &crate::core::intent::Intent,
+    _defined_intents: &mut HashMap<String, crate::core::intent::Intent>,
+    printer: &Printer,
+) -> Result<String, String> {
+    printer.info("Evolve functionality coming soon");
+    Ok("[?] Evolve - placeholder".to_string())
+}
+
+fn execute_grow_intent(
+    _intent: &crate::core::intent::Intent,
+    _defined_intents: &mut HashMap<String, crate::core::intent::Intent>,
+    printer: &Printer,
+) -> Result<String, String> {
+    printer.info("Grow functionality coming soon");
+    Ok("[?] Grow - placeholder".to_string())
+}
+
+fn execute_reflect_intent(
+    intent: &crate::core::intent::Intent,
+    env: &Env,
+    defined_intents: &HashMap<String, crate::core::intent::Intent>,
+    validator: &crate::core::startup_validator::StartupValidator,
+    printer: &Printer,
+) -> Result<String, String> {
+    if let Some(Target::Expression(expr)) = &intent.target {
+        // Reflection expressions operate on system metadata
+        match expr.as_str() {
+            "system.intents.count" => {
+                let system_count = 15; // Core system intents
+                let user_count = defined_intents.len();
+                Ok(format!("[+] System intents: {}, User intents: {}", 
+                    system_count, user_count))
+            }
+            
+            "system.variables.count" => {
+                let count = env.list().len();
+                Ok(format!("[+] Variables: {}", count))
+            }
+            
+            "safety.rules" => {
+                match validator.check_system_integrity() {
+                    Ok(report) => Ok(format!("[+] Safety rules: {} critical, {} warnings",
+                        report.critical_issues.len(), report.warnings.len())),
+                    Err(e) => Err(format!("Safety check failed: {}", e))
+                }
+            }
+            
+            "system.version" => Ok("[+] Morris v2.0 (reflective)".to_string()),
+            
+            _ => {
+                // Try to evaluate as a more complex reflection expression
+                if expr.starts_with("intent.") {
+                    let intent_name = expr.trim_start_matches("intent.");
+                    if let Some(intent_def) = defined_intents.get(intent_name) {
+                        let mut output = String::new();
+                        output.push_str(&format!("[+] Intent: {}\n", intent_name));
+                        output.push_str(&format!("  Verb: {:?}\n", intent_def.verb));
+                        output.push_str(&format!("  Source: {}\n", 
+                            intent_def.intent_source.as_deref().unwrap_or("system")));
+                        output.push_str(&format!("  Composition: {}\n", intent_def.is_composition));
+                        output.push_str(&format!("  Parameters: {}\n", 
+                            intent_def.parameter_defs.len()));
+                        Ok(output)
+                    } else {
+                        Err(format!("Intent '{}' not found", intent_name))
+                    }
+                } else {
+                    Err(format!("Unknown reflection expression: {}", expr))
+                }
+            }
+        }
+    } else {
+        Err("Reflect requires an expression".to_string())
+    }
+}
+
+fn execute_test_intent(
+    intent: &crate::core::intent::Intent,
+    env: &mut Env,
+    defined_intents: &HashMap<String, crate::core::intent::Intent>,
+    printer: &Printer,
+) -> Result<String, String> {
+    if let Some(Target::Expression(test_spec)) = &intent.target {
+        // Parse: "intent_name with param1=value1, param2=value2"
+        if let Some(with_pos) = test_spec.find(" with ") {
+            let intent_name = test_spec[..with_pos].trim();
+            let params_str = test_spec[with_pos + 6..].trim(); // " with " is 6 chars
+            
+            if let Some(intent_def) = defined_intents.get(intent_name) {
+                printer.info(&format!("Testing intent: {}", intent_name));
+                
+                // Parse parameters
+                let mut test_params = HashMap::new();
+                for param_pair in params_str.split(',') {
+                    let parts: Vec<&str> = param_pair.split('=').map(|s| s.trim()).collect();
+                    if parts.len() == 2 {
+                        test_params.insert(parts[0].to_string(), parts[1].to_string());
+                    }
+                }
+                
+                // Create test environment
+                let mut test_env = crate::core::env::Env::new();
+                
+                // Set up test variables
+                for (param, value) in &test_params {
+                    // Try to parse value appropriately
+                    let parsed_value = if let Ok(num) = value.parse::<i64>() {
+                        crate::core::types::Value::Int(num)
+                    } else if value == "true" {
+                        crate::core::types::Value::Bool(true)
+                    } else if value == "false" {
+                        crate::core::types::Value::Bool(false)
+                    } else {
+                        crate::core::types::Value::Str(value.clone())
+                    };
+                    test_env.set_direct(param, parsed_value);
+                }
+                
+                // Execute intent in test environment using helper
+                let test_intent = intent_def.clone();
+                let filesystem = crate::core::filesystem::FileSystem::new();
+                let mut test_library = crate::core::library::Library::new();
+                let mut test_history = Vec::new();
+                let mut test_history_mgr = crate::core::history::HistoryManager::new();
+                let mut test_engine_mgr = crate::core::change_engine::ChangeEngineManager::new();
+                
+                match execute_intent_in_test_env(
+                    &test_intent, 
+                    &mut test_env, 
+                    &filesystem, 
+                    &mut test_library, 
+                    &mut test_history,
+                    &mut test_history_mgr,
+                    &mut test_engine_mgr,
+                    printer
+                ) {
+                    Ok(result) => Ok(format!("[+] Test passed: {}", result)),
+                    Err(e) => Ok(format!("[-] Test failed: {}", e)),
+                }
+            } else {
+                Err(format!("Intent '{}' not found", intent_name))
+            }
+        } else {
+            Err("Test requires 'with' clause".to_string())
+        }
+    } else {
+        Err("Test requires a specification".to_string())
+    }
+}
+
+fn execute_adopt_intent(
+    intent: &crate::core::intent::Intent,
+    defined_intents: &mut HashMap<String, crate::core::intent::Intent>,
+    printer: &Printer,
+) -> Result<String, String> {
+    if let Some(Target::Expression(intent_name)) = &intent.target {
+        if let Some(intent_def) = defined_intents.get(intent_name) {
+            // Mark intent as adopted/production-ready
+            let mut adopted_intent = intent_def.clone();
+            adopted_intent.safety_level = crate::core::intent::SafetyLevel::CoreFunction;
+            
+            // Move to system intents (or mark as adopted)
+            defined_intents.insert(intent_name.clone(), adopted_intent);
+            
+            printer.success(&format!("Adopted intent: {}", intent_name));
+            Ok(format!("[+] Intent '{}' adopted to production", intent_name))
+        } else {
+            Err(format!("Intent '{}' not found", intent_name))
+        }
+    } else {
+        Err("Adopt requires intent name".to_string())
+    }
+}
+
 fn show_morris_logo(printer: &Printer) {
     // Clear screen for clean startup
     print!("\x1B[2J\x1B[1;1H");
     
     if printer.use_color {
-        println!("\x1b[1;38;5;39m"); // Bright professional blue
+        println!("\x1b[1;38;5;39m"); // Bright professional blue (same as original)
     }
     
     println!(r"
@@ -3874,15 +4490,17 @@ fn show_morris_logo(printer: &Printer) {
         ║                                          ║
         ║             M O R R I S                  ║
         ║                                          ║
-        ║    Memory Organization a Reactive        ║
-        ║    Recursive Intent-driven System        ║
+        ║    Memory Organization as a Reactive     ║
+        ║    & Recursive Intent-driven System      ║
         ║                                          ║
         ║    ────────────────────────────────      ║
         ║                                          ║
-        ║    An engine that grows from             ║
-        ║    remembering how to grow               ║
+        ║    We shape our tools,                   ║
+        ║    and our tools shape us...             ║
         ║                                          ║
-        ║    v2.0 • reactive propagation engine    ║
+        ║    ────────────────────────────────      ║
+        ║                                          ║
+        ║    v3.0 • Meta-programmability           ║
         ║                                          ║
         ╚══════════════════════════════════════════╝
     ");
@@ -3893,3 +4511,6 @@ fn show_morris_logo(printer: &Printer) {
     
     println!();
 }
+
+
+

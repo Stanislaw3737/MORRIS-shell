@@ -2,6 +2,9 @@ use std::collections::HashMap;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use crate::core::expr::parse_variable_with_type;
+use crate::core::expr::parse_propagation_suffix;
+use sha2::{Sha256, Digest};
+use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Verb {
@@ -90,6 +93,16 @@ pub enum Verb {
     JsonGet,    
     JsonSet,
 
+    Examine,     // inspect intents, inspect variables, inspect engine
+    Construct,   // construct intent name with params {expr}
+    Evolve,      // evolve intent_name add_param name default="value"
+    Grow,        // grow new_intent from base_intent
+    
+    // Phase 2: Meta-programming  
+    Reflect,        // meta eval "expression"
+    Test,        // test intent_name with params
+    Adopt,       // adopt intent_name (move to production)
+
 }
 
 #[derive(Debug, Clone)]
@@ -128,27 +141,71 @@ pub struct Intent {
     pub parameter_defs: HashMap<String, String>, // Parameter definitions with defaults
     pub execution_guard: Option<String>, // Condition to check before execution
     pub intent_source: Option<String>, // For defined intents
+    pub integrity: IntentIntegrity,
+    
+    // NEW: Safety metadata
+    pub safety_level: SafetyLevel,
+    pub allowed_operations: Vec<Operation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntentIntegrity {
+    pub content_hash: String,      // SHA256 of intent content
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub created_by: String,       // "system", "user", "library"
+    pub modification_count: u32,
+    pub last_modified: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SafetyLevel {
+    SystemCritical,  // Cannot be modified or removed
+    CoreFunction,    // Essential but can be extended
+    UserDefined,     // Fully modifiable by user
+    Experimental,    // Requires explicit enablement
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Operation {
+    Read,
+    Execute,
+    Modify,
+    Extend,
+    Introspect,
 }
 
 impl Intent {
     pub fn new(verb: Verb) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            timestamp: Utc::now(),
+        // Use the verb directly without formatting it separately
+        let integrity = IntentIntegrity::new("system");
+        
+        let mut intent = Self {
+            id: uuid::Uuid::new_v4(),
+            timestamp: chrono::Utc::now(),
             verb,
             target: None,
             condition: None,
             parameters: HashMap::new(),
             context: HashMap::new(),
             state: IntentState::Created,
-            // New fields with defaults
             is_composition: false,
             composition_name: None,
             sub_intents: Vec::new(),
             parameter_defs: HashMap::new(),
             execution_guard: None,
             intent_source: None,
-        }
+            integrity,
+            safety_level: SafetyLevel::UserDefined,
+            allowed_operations: vec![Operation::Read, Operation::Execute],
+        };
+        
+        // Finalize the intent after construction
+        intent.finalize();
+        intent
+    }
+
+    pub fn get_name(&self) -> Option<String> {
+        self.composition_name.clone()
     }
     
     pub fn with_target(mut self, target: Target) -> Self {
@@ -257,34 +314,77 @@ impl Intent {
     }
     
     // NEW: Apply parameters to create concrete intent
-    pub fn instantiate_with_params(&self, params: &HashMap<String, String>) -> Self {
-        let mut instantiated = self.clone();
+    pub fn instantiate_with_params(&self, params: &HashMap<String, String>) -> Intent {
+        // Create a copy with parameters applied
+        let mut new_intent = self.clone();
         
-        // Merge provided parameters with defaults
-        let mut all_params = self.parameter_defs.clone();
-        for (key, value) in params {
-            all_params.insert(key.clone(), value.clone());
-        }
-        
-        // Replace parameter placeholders in target string
-        if let Some(Target::Expression(expr)) = &instantiated.target {
+        // Apply parameters to target expression if present
+        if let Some(Target::Expression(expr)) = &new_intent.target {
             let mut new_expr = expr.clone();
-            for (param, value) in &all_params {
+            for (param, value) in params {
                 let placeholder = format!("{{{}}}", param);
                 new_expr = new_expr.replace(&placeholder, value);
             }
-            instantiated.target = Some(Target::Expression(new_expr));
+            new_intent.target = Some(Target::Expression(new_expr));
         }
         
-        // Also replace in parameters
-        for (_key, value) in &mut instantiated.parameters {
-            for (param, param_value) in &all_params {
-                let placeholder = format!("{{{}}}", param);
-                *value = value.replace(&placeholder, param_value);
-            }
+        // Apply parameters to other fields
+        new_intent.parameters.extend(params.clone());
+        
+        new_intent
+    }
+
+    pub fn finalize(&mut self) {
+        let content = self.to_string_for_integrity();
+        self.integrity.update_hash(&content);
+    }
+    
+    fn to_string_for_integrity(&self) -> String {
+        // Just use a simple representation that doesn't need verb ownership
+        format!("verb={:?}", self.verb)
+    }
+}
+
+impl IntentIntegrity {
+    pub fn new(created_by: &str) -> Self {
+        Self {
+            content_hash: String::new(), // Will be set after intent creation
+            created_at: chrono::Utc::now(),
+            created_by: created_by.to_string(),
+            modification_count: 0,
+            last_modified: None,
+        }
+    }
+    
+    pub fn create_for_intent(created_by: &str, intent_content: &str) -> Self {
+        let mut integrity = Self::new(created_by);
+        integrity.update_hash(intent_content);
+        integrity
+    }
+    
+    pub fn update_hash(&mut self, intent_content: &str) {
+        self.content_hash = self.calculate_hash(intent_content);
+        self.last_modified = Some(chrono::Utc::now());
+        self.modification_count += 1;
+    }
+    
+    pub fn calculate_hash(&self, content: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(content.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+    
+    pub fn validate(&self, current_content: &str) -> Result<(), String> {
+        if self.content_hash.is_empty() {
+            // New intent, no hash yet
+            return Ok(());
         }
         
-        instantiated
+        let current_hash = self.calculate_hash(current_content);
+        if current_hash != self.content_hash {
+            return Err("Intent content has been modified since creation".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -298,7 +398,7 @@ pub enum IntentState {
     NeedsClarification,
 }
 
-// REMOVED THE DUPLICATE impl Intent BLOCK HERE
+
 
 fn parse_ensure_intent(input: &str) -> Result<Intent, String> {
     let content = input.trim_start_matches("ensure ").trim();
@@ -903,6 +1003,17 @@ pub fn parse_to_intent(input: &str) -> Result<Intent, String> {
         _ if input.starts_with("from-json ") => parse_from_json_intent(input),
         _ if input.starts_with("json-get ") => parse_json_get_intent(input),
         _ if input.starts_with("json-set ") => parse_json_set_intent(input),
+        
+        _ if input.starts_with("examine ") => parse_examine_intent(input),
+        _ if input.starts_with("construct ") => parse_construct_intent(input),
+        _ if input.starts_with("evolve ") => parse_evolve_intent(input),
+        _ if input.starts_with("grow ") => parse_grow_intent(input),
+        
+        
+        _ if input.starts_with("reflect ") => parse_reflect_intent(input),
+        _ if input.starts_with("test ") => parse_test_intent(input),
+        _ if input.starts_with("adopt ") => parse_adopt_intent(input),
+
         _ => Err(format!("Unknown intent: '{}'", input)),
         
     }
@@ -912,35 +1023,49 @@ pub fn parse_to_intent(input: &str) -> Result<Intent, String> {
 fn parse_set_intent(input: &str) -> Result<Intent, String> {
     let content = input.trim_start_matches("set ").trim();
     
-    // Handle type annotations: set var:type = value [as type]
+    // FIRST: Find the equals position to separate variable from value
     let equals_pos = find_equals_position(content)?;
     if equals_pos == 0 {
         return Err("Set intent requires format: set var = value".to_string());
     }
     
-    let (var_part, value_part) = content.split_at(equals_pos);
-    let var_part = var_part.trim_end_matches('=').trim();
-    let value_part = value_part[1..].trim(); // Skip the '='
+    let var_part = &content[..equals_pos].trim_end_matches('=').trim();
+    let value_part = &content[equals_pos + 1..].trim(); // Skip the '='
+    
+    // SECOND: Parse propagation suffix from the VALUE part only
+    let (clean_value_part, delay, limit) = parse_propagation_suffix(value_part)?;
     
     // Parse variable with potential type annotation
     let (var_name, declared_type) = parse_variable_with_type(var_part)?;
     
     let mut intent = Intent::new(Verb::Set)
         .with_target(Target::Variable(var_name))
-        .with_parameter("value", value_part);
+        .with_parameter("value", &clean_value_part);
     
-    // Store type information as metadata
+    // Store type information if present
     if let Some(t) = declared_type {
         intent = intent.with_parameter("declared_type", t.name());
     }
     
-    // Handle existing type hints (as int, as bool, etc.)
-    let value_part = handle_existing_type_hints(value_part, &mut intent)?;
+    // Store propagation control information
+    if delay > 0 {
+        intent = intent.with_parameter("propagation_delay", &delay.to_string());
+    }
+    if limit != usize::MAX {
+        intent = intent.with_parameter("propagation_limit", &limit.to_string());
+    }
     
     Ok(intent)
 }
 
 fn find_equals_position(s: &str) -> Result<usize, String> {
+    let s = s.trim();
+    
+    // If this is just a value expression (no variable name and equals), return 0
+    if !s.contains('=') {
+        return Ok(0);
+    }
+    
     let mut in_quotes = false;
     let mut quote_char = '"';
     let mut paren_depth = 0;
@@ -1573,4 +1698,111 @@ fn parse_json_set_intent(input: &str) -> Result<Intent, String> {
     }
     
     Err("json-set requires format: json-set variable.path = value".to_string())
+}
+
+fn parse_examine_intent(input: &str) -> Result<Intent, String> {
+    let target = input.trim_start_matches("examine ").trim();
+    
+    match target {
+        "intents" | "variables" | "engine" | "system" | "safety" | "rules" => {
+            Ok(Intent::new(Verb::Examine)  // Use Verb::Examine, not Verb::Inspect
+                .with_target(Target::Expression(target.to_string())))
+        }
+        _ => Err(format!("Unknown examine target: '{}'", target))
+    }
+}
+
+fn parse_construct_intent(input: &str) -> Result<Intent, String> {
+    // construct intent "name" with (param1, param2="default") { expression }
+    let content = input.trim_start_matches("construct ").trim();
+    
+    if !content.starts_with("intent ") {
+        return Err("Construct must start with 'intent'".to_string());
+    }
+    
+    let intent_content = content.trim_start_matches("intent ").trim();
+    
+    // Parse pattern: "name" with (params) {expr}
+    if let Some(name_end) = intent_content.find(" with ") {
+        let name = intent_content[..name_end].trim().trim_matches('"');
+        let rest = intent_content[name_end + 6..].trim(); // " with " is 6 chars
+        
+        if rest.starts_with('(') && rest.contains(')') && rest.contains('{') {
+            Ok(Intent::new(Verb::Construct)
+                .with_target(Target::Expression(intent_content.to_string()))
+                .with_parameter("name", name))
+        } else {
+            Err("Invalid construct format. Expected: construct intent \"name\" with (params) {expr}".to_string())
+        }
+    } else {
+        Err("Missing 'with' clause in construct intent".to_string())
+    }
+}
+
+fn parse_evolve_intent(input: &str) -> Result<Intent, String> {
+    // evolve intent_name add_param "name" default="value"
+    let content = input.trim_start_matches("evolve ").trim();
+    
+    let parts: Vec<&str> = content.splitn(3, ' ').collect();
+    if parts.len() < 3 {
+        return Err("Evolve requires: evolve intent_name action params".to_string());
+    }
+    
+    let intent_name = parts[0];
+    let action = parts[1];
+    let params = parts[2];
+    
+    Ok(Intent::new(Verb::Evolve)
+        .with_target(Target::Expression(intent_name.to_string()))
+        .with_parameter("action", action)
+        .with_parameter("params", params))
+}
+
+fn parse_grow_intent(input: &str) -> Result<Intent, String> {
+    // grow new_intent from base_intent
+    let content = input.trim_start_matches("grow ").trim();
+    
+    if let Some(from_pos) = content.find(" from ") {
+        let new_name = content[..from_pos].trim();
+        let base_name = content[from_pos + 6..].trim(); // " from " is 6 chars
+        
+        Ok(Intent::new(Verb::Grow)
+            .with_target(Target::Expression(new_name.to_string()))
+            .with_parameter("from", base_name))
+    } else {
+        Err("Grow requires 'from' clause".to_string())
+    }
+}
+
+fn parse_reflect_intent(input: &str) -> Result<Intent, String> {
+    let expr = input.trim_start_matches("reflect ").trim();
+    
+    if expr.is_empty() {
+        return Err("Reflect requires an expression".to_string());
+    }
+    
+    Ok(Intent::new(Verb::Reflect)
+        .with_target(Target::Expression(expr.to_string())))
+}
+
+fn parse_test_intent(input: &str) -> Result<Intent, String> {
+    let spec = input.trim_start_matches("test ").trim();
+    
+    if spec.is_empty() {
+        return Err("Test requires intent specification".to_string());
+    }
+    
+    Ok(Intent::new(Verb::Test)
+        .with_target(Target::Expression(spec.to_string())))
+}
+
+fn parse_adopt_intent(input: &str) -> Result<Intent, String> {
+    let name = input.trim_start_matches("adopt ").trim();
+    
+    if name.is_empty() {
+        return Err("Adopt requires intent name".to_string());
+    }
+    
+    Ok(Intent::new(Verb::Adopt)
+        .with_target(Target::Expression(name.to_string())))
 }
