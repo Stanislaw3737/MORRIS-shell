@@ -1,0 +1,26 @@
+# Core commands - Morris system intents
+set = set {variable} = {value}
+ensure = ensure {condition}
+derive = derive {variable}
+analyze = analyze {target}
+writeout = writeout {content}
+find = find {pattern}
+freeze = freeze {variable}
+
+# File operations
+save = save {path}
+load = load {path}
+read = read {path} into {variable}
+write = write {path} {content}
+append = append {path} {content}
+mkdir = mkdir {path}
+list = list {path}
+info = info {path}
+exists = exists {path}
+
+# Change engine
+engine = engine status
+engine_status = engine status
+engine_save = engine save
+engine_load = engine load
+engine_validate = engine validate

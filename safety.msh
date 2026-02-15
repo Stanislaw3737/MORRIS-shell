@@ -1,0 +1,4 @@
+# Safety rules for Morris system
+validate = validate
+integrity_check = integrity check
+safety_check = examine safety
