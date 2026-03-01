@@ -1,4 +1,4 @@
-# Morris
+# MORRIS
 
 **Memory Organization & Reactive Recursive Intent‑driven System**
 
