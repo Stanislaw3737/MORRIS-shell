@@ -1,6 +1,6 @@
 # MORRIS
 
-**Memory Organization & Reactive Recursive Intent‑driven System**
+**Memory Organization as a Reactive and Recursive Intent‑driven System**
 
 `morris` is an intent‑driven shell and data environment written in Rust. Instead of imperative commands, you express **intents** such as:
 
